@@ -788,20 +788,28 @@
       <div class="card" style="max-width:430px;margin:0 auto">
         <div class="card-title">⚙️ Paramètres</div>
 
-        <!-- Google Sheets -->
+        <!-- Supabase -->
         <div style="margin-bottom:20px;background:var(--s2);border-radius:8px;padding:14px;border:1px solid var(--brd)">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
             <div style="font-weight:700;color:var(--green);font-size:12px;text-transform:uppercase;letter-spacing:1px">🗄️ Base de données Supabase</div>
             <span id="gs-sync-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--s1);color:var(--muted)">Non connecté</span>
           </div>
           <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Synchronisez vos données sur tous les appareils en temps réel.</div>
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn-dark btn-sm" style="flex:1;color:var(--green);border-color:var(--green)44" onclick="openGsModal()">
               ⚙️ Configurer
             </button>
             <button class="btn btn-dark btn-sm" style="flex:1;color:var(--blue);border-color:var(--blue)44" onclick="gsSyncNow()">
-              🔄 Synchroniser
+              🔄 Charger depuis Supabase
             </button>
+          </div>
+          <div style="margin-top:8px">
+            <button id="btn-push-supabase" class="btn btn-dark btn-block" style="padding:10px;color:var(--yellow);border-color:var(--yellow)44;font-size:13px;font-weight:700" onclick="pushAllToSupabase()">
+              📤 Envoyer TOUTES les données vers Supabase
+            </button>
+            <div style="font-size:10px;color:var(--muted);margin-top:4px;text-align:center">
+              Utilisez ce bouton la première fois ou après une réinitialisation
+            </div>
           </div>
         </div>
 
@@ -5400,6 +5408,60 @@ async function gsSyncNow() {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  POUSSER TOUTES LES DONNÉES VERS SUPABASE
+// ═══════════════════════════════════════════════════════════
+async function pushAllToSupabase() {
+  if (!DB_CONFIG.url || !DB_CONFIG.key) {
+    showToast("⚠️ Supabase non configuré","warn"); return;
+  }
+  if (window.location.protocol === "file:") {
+    showToast("⚠️ Ouvrez l'app sur GitHub Pages pour synchroniser","warn"); return;
+  }
+  var btn = document.getElementById("btn-push-supabase");
+  if (btn) { btn.disabled = true; btn.textContent = "⏳ Envoi en cours..."; }
+  DB_STATUS = "syncing"; updateSyncIndicator();
+  try {
+    showToast("📤 Envoi de " + STATE.records.length + " numéros vers Supabase...");
+    // Supprimer d'abord puis réinsérer pour éviter les conflits
+    await fetch(DB_CONFIG.url + "/rest/v1/flotte_records?uid=neq.XXXXX", {
+      method: "DELETE",
+      headers: { "apikey": DB_CONFIG.key, "Authorization": "Bearer " + DB_CONFIG.key }
+    });
+    // Envoyer par chunks de 200
+    var recs = STATE.records.map(function(r) {
+      return { uid:String(r._uid), id:r.id||"", msisdn:r.msisdn||"", nom:r.nom||"",
+               fonction:r.fonction||"", dotation:r.dotation||"", societe:r.societe||"",
+               zone:r.zone||"", mtrl:r.mtrl||"", imsi:r.imsi||"", remarques:r.remarques||"" };
+    });
+    var ok = true;
+    for (var i = 0; i < recs.length; i += 200) {
+      var chunk = recs.slice(i, i+200);
+      var r = await fetch(DB_CONFIG.url + "/rest/v1/flotte_records", {
+        method: "POST",
+        headers: {
+          "apikey": DB_CONFIG.key, "Authorization": "Bearer " + DB_CONFIG.key,
+          "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"
+        },
+        body: JSON.stringify(chunk)
+      });
+      if (!r.ok) { ok = false; console.warn("Chunk error:", await r.text()); }
+      // Mise à jour bouton progression
+      if (btn) btn.textContent = "⏳ " + Math.min(i+200, recs.length) + "/" + recs.length + "...";
+    }
+    // Envoyer aussi users et requests
+    await gsSaveAll();
+    DB_STATUS = "ok"; updateSyncIndicator();
+    showToast("✅ " + STATE.records.length + " numéros envoyés vers Supabase !");
+    if (btn) { btn.textContent = "✅ Données envoyées !"; btn.disabled = false;
+      setTimeout(function(){ btn.textContent = "📤 Envoyer TOUTES les données vers Supabase"; }, 3000); }
+  } catch(e) {
+    DB_STATUS = "error"; updateSyncIndicator();
+    showToast("❌ Erreur: " + e.message, "warn");
+    if (btn) { btn.textContent = "📤 Envoyer TOUTES les données vers Supabase"; btn.disabled = false; }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 //  SYNCHRONISATION TEMPS RÉEL — toutes les 30 secondes
 // ═══════════════════════════════════════════════════════════
 var _syncInterval = null;
@@ -5416,14 +5478,24 @@ async function silentSync() {
     var reqs = await sbFetch("flotte_requests", "GET", null, "select=*&limit=1000");
     var usrs = await sbFetch("flotte_users",    "GET", null, "select=*");
     var changed = false;
-    if (recs && recs.length !== STATE.records.length) {
-      STATE.records = recs.map(function(r,i) {
-        return { _uid:parseInt(r.uid)||(Date.now()+i), id:r.id||"",
-                 msisdn:normMsisdn(r.msisdn)||r.msisdn||"", nom:r.nom||"",
-                 fonction:r.fonction||"", dotation:r.dotation||"", societe:r.societe||"",
-                 zone:r.zone||"", mtrl:r.mtrl||"", imsi:r.imsi||"", remarques:r.remarques||"" };
-      });
-      changed = true;
+    if (recs) {
+      // Détecter changements : taille OU dotation du premier élément différente
+      var recsChanged = recs.length !== STATE.records.length;
+      if (!recsChanged && recs.length > 0) {
+        var localFirst = STATE.records[0] || {};
+        var remoteFirst = recs[0] || {};
+        recsChanged = (remoteFirst.dotation !== localFirst.dotation) ||
+                      (remoteFirst.nom       !== localFirst.nom);
+      }
+      if (recsChanged) {
+        STATE.records = recs.map(function(r,i) {
+          return { _uid:parseInt(r.uid)||(Date.now()+i), id:r.id||"",
+                   msisdn:normMsisdn(r.msisdn)||r.msisdn||"", nom:r.nom||"",
+                   fonction:r.fonction||"", dotation:r.dotation||"", societe:r.societe||"",
+                   zone:r.zone||"", mtrl:r.mtrl||"", imsi:r.imsi||"", remarques:r.remarques||"" };
+        });
+        changed = true;
+      }
     }
     if (reqs && reqs.length !== STATE.requests.length) {
       STATE.requests = reqs.map(function(r){ return Object.assign({},r,{_uid:parseInt(r.uid)||Date.now()}); });
