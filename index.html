@@ -122,6 +122,8 @@
   /* ── Label ── */
   .lbl { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
   .lbl-req { color: var(--red); }
+  .live-dot { display:inline-block;width:7px;height:7px;border-radius:50%;background:#4CAF50;margin-right:4px;animation:livepulse 2s ease-in-out infinite; }
+  @keyframes livepulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.8)} }
 
   /* ── Field group ── */
   .field { margin-bottom: 13px; }
@@ -423,7 +425,7 @@
       </div>
       <div class="user-info">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;justify-content:flex-end">
-        <div id="gs-sync-indicator" style="font-size:10px;color:var(--muted);cursor:pointer" onclick="openGsModal()">☁️ Non connecté</div>
+        <div id="gs-sync-indicator" style="font-size:10px;color:var(--muted);cursor:pointer" onclick="if(STATE.auth&&STATE.auth.role==='admin')openGsModal()">☁️ Non connecté</div>
         <button id="btn-sync-now" onclick="manualSync()" title="Synchroniser maintenant"
           style="background:transparent;border:1px solid #333;border-radius:5px;padding:2px 7px;font-size:10px;color:var(--muted);cursor:pointer;display:none">
           🔄
@@ -800,8 +802,8 @@
       <div class="card" style="max-width:430px;margin:0 auto">
         <div class="card-title">⚙️ Paramètres</div>
 
-        <!-- Supabase -->
-        <div style="margin-bottom:20px;background:var(--s2);border-radius:8px;padding:14px;border:1px solid var(--brd)">
+        <!-- Supabase — Admin uniquement -->
+        <div id="supabase-settings-section" style="margin-bottom:20px;background:var(--s2);border-radius:8px;padding:14px;border:1px solid var(--brd)">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
             <div style="font-weight:700;color:var(--green);font-size:12px;text-transform:uppercase;letter-spacing:1px">🗄️ Base de données Supabase</div>
             <span id="gs-sync-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--s1);color:var(--muted)">Non connecté</span>
@@ -2754,7 +2756,7 @@ function buildNav() {
       ["journal", "📒 Journal"],
       ["facture", "📄 Facture MTN"],
       ["users",   "👥 Utilisateurs RH"],
-      ["settings","⚙️ Paramètres"],
+      ...(STATE.auth && STATE.auth.role === "admin" ? [["settings","⚙️ Paramètres"]] : []),
     ] : []),
   ];
   const container = document.getElementById("nav-tabs");
@@ -3402,8 +3404,35 @@ function rejectRequest(reqUid) {
 //  JOURNAL
 // ═══════════════════════════════════════════════════════════
 function addJournalEntry(entry) {
+  entry._uid = entry._uid || uid();
+  entry.date = entry.date || fmtNow();
   STATE.journal.unshift(entry);
-  if (STATE.journal.length > 500) STATE.journal = STATE.journal.slice(0,500);
+  if (STATE.journal.length > 1000) STATE.journal = STATE.journal.slice(0, 1000);
+  // Sauvegarder dans Supabase immédiatement
+  if (DB_CONFIG.enabled && DB_CONFIG.url && DB_CONFIG.key && window.location.protocol !== "file:") {
+    var jEntry = {
+      uid:      String(entry._uid),
+      date:     entry.date     || fmtNow(),
+      type:     entry.type     || "",
+      msisdn:   entry.msisdn   || "",
+      nom:      entry.nom      || "",
+      fonction: entry.fonction || "",
+      dotation: String(entry.dotation || ""),
+      societe:  entry.societe  || "",
+      zone:     entry.zone     || "",
+      motif:    entry.motif    || "",
+      admin:    STATE.auth ? (STATE.auth.name || STATE.auth.role) : "Système",
+    };
+    fetch(DB_CONFIG.url + "/rest/v1/flotte_journal", {
+      method: "POST",
+      headers: {
+        "apikey": DB_CONFIG.key, "Authorization": "Bearer " + DB_CONFIG.key,
+        "Content-Type": "application/json", "Accept": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal"
+      },
+      body: JSON.stringify([jEntry])
+    }).catch(function(e){ console.warn("Journal sync:", e.message); });
+  }
 }
 
 function renderJournal() {
@@ -3606,6 +3635,12 @@ function deleteUser(userUid) {
 //  SETTINGS
 // ═══════════════════════════════════════════════════════════
 function populateSettingsStats() {
+  // Masquer la section Supabase pour les RH
+  var sbSection = document.getElementById("supabase-settings-section");
+  var gsModal   = document.getElementById("gs-modal");
+  var isAdmin   = STATE.auth && STATE.auth.role === "admin";
+  if (sbSection) sbSection.style.display = isAdmin ? "block" : "none";
+  if (gsModal && !isAdmin) gsModal.style.display = "none";
   document.getElementById("current-pin-display").textContent = STATE.adminPin;
   const s = stats();
   document.getElementById("settings-stats").innerHTML = [
@@ -3794,16 +3829,49 @@ function loadFactureFile(input) {
           .replace(/[\s\-\./\(\)]/g,"_")
       );
 
-      let iM = detectMsisdnCol(rawHeaders);
-      let iD = detectDotationCol(rawHeaders);
-      let iN = detectNomCol(rawHeaders);
-
-      // Si pas d'en-tête MSISDN, chercher dans la 1ère ligne de données
+      let iM = -1, iD = -1, iN = -1;
       let dataStartRow = headerRowIdx + 1;
-      if (iM < 0) {
-        // Tenter autodétection sur la première ligne de données
-        const sampleRow = rows[dataStartRow] || [];
-        iM = findMsisdnInRow(sampleRow);
+
+      // ── Détection facture MTN standard ──────────────────────
+      // Format MTN CI : Col1=Nom, Col2=MSISDN, Col7=MontantTTC
+      // Vérifier sur les premières lignes de données
+      const sampleRows = rows.slice(dataStartRow, dataStartRow + 5);
+      const hasMtnCol2 = sampleRows.some(function(r) {
+        return r[1] && /^0[5-9]\d{8}$/.test(normMsisdn(String(r[1])));
+      });
+
+      if (hasMtnCol2) {
+        // Structure MTN standard confirmée
+        // Col A(0)=Nom, Col B(1)=MSISDN, Col C=Formule, Col D=FraisHT,
+        // Col E=Comm, Col F=TS3%, Col G=TVA18%, Col H(7)=MontantTTC
+        iN = 0;  // Col A = Nom
+        iM = 1;  // Col B = MSISDN
+        // MontantTTC = dernière colonne non vide de chaque ligne
+        // Vérifier col H(7) ou G(6) selon la facture
+        const testRow = sampleRows.find(function(r){ return r[1] && normMsisdn(String(r[1])).match(/^0[5-9]\d{8}$/); });
+        if (testRow) {
+          // Chercher la dernière colonne avec un montant numérique
+          for (var ci = testRow.length - 1; ci >= 5; ci--) {
+            var val = String(testRow[ci]||"").replace(/[\s]/g,"").replace(",",".");
+            if (val && !isNaN(parseFloat(val)) && parseFloat(val) > 100) {
+              iD = ci;
+              break;
+            }
+          }
+          if (iD < 0) iD = 7; // fallback col H
+        } else {
+          iD = 7; // fallback col H = MontantTTC
+        }
+      } else {
+        // Détection automatique fallback
+        iM = detectMsisdnCol(rawHeaders);
+        iD = detectDotationCol(rawHeaders);
+        iN = detectNomCol(rawHeaders);
+        // Si toujours pas trouvé, chercher dans les données
+        if (iM < 0) {
+          const sampleRow = rows[dataStartRow] || [];
+          iM = findMsisdnInRow(sampleRow);
+        }
         if (iM < 0) {
           showFactureError(
             "Impossible de trouver la colonne des numéros de téléphone.\n" +
@@ -3837,11 +3905,12 @@ function loadFactureFile(input) {
       }
 
       // Info colonnes détectées
+      const mtnMode = hasMtnCol2 ? " — Format MTN ✅ (col.A=Nom, col.B=MSISDN, col."+(iD+1)+"=MontantTTC)" : "";
       const colInfo = [
-        `N° téléphone : col. ${iM+1} («${rawHeaders[iM]||"?"}»)`,
-        iD>=0 ? `Dotation : col. ${iD+1} («${rawHeaders[iD]||"?"}»)` : "Dotation : non trouvée",
-        iN>=0 ? `Nom : col. ${iN+1} («${rawHeaders[iN]||"?"}»)` : "Nom : non trouvé",
-      ].join("  ·  ");
+        `📱 Numéro : col. ${iM+1}`,
+        `👤 Nom : col. ${iN >= 0 ? iN+1 : "?"}`,
+        `💰 Dotation/MontantTTC : col. ${iD >= 0 ? iD+1 : "?"}`,
+      ].join("  ·  ") + mtnMode;
 
       // Affichage
       const nameEl = document.getElementById("facture-file-name");
@@ -5376,27 +5445,40 @@ async function gsCall(action, extraParams) {
 }
 
 function updateSyncIndicator() {
-  const el    = document.getElementById("gs-sync-indicator");
-  const badge = document.getElementById("gs-sync-badge");
+  var el    = document.getElementById("gs-sync-indicator");
+  var badge = document.getElementById("gs-sync-badge");
+  var ok    = DB_CONFIG && DB_CONFIG.enabled && DB_CONFIG.url && DB_CONFIG.key;
+  var isAdmin = STATE.auth && STATE.auth.role === "admin";
 
-  // Si GS pas configuré → masquer complètement l'indicateur
-  const configured = GS_CONFIG && GS_CONFIG.enabled
-                     && GS_CONFIG.url
-                     && GS_CONFIG.url.startsWith("https://script.google.com");
-
-  if (!configured) {
-    if (el)    { el.style.display = "none"; }
+  if (!ok) {
+    if (el)    el.style.display = "none";
     if (badge) { badge.textContent = "Non connecté"; badge.style.color = "var(--muted)"; }
     return;
   }
 
-  if (el) el.style.display = "block";
-  const icons  = { idle:"☁️", syncing:"🔄", ok:"✅", error:"⚠️" };
-  const colors = { idle:"var(--muted)", syncing:"var(--yellow)", ok:"var(--green)", error:"var(--red)" };
-  const labels = { idle:"Non connecté", syncing:"Sync...", ok:"Synchronisé", error:"Erreur sync" };
-  const st = GS_SYNC_STATUS || "idle";
-  if (el)    { el.textContent = icons[st] + " " + labels[st]; el.style.color = colors[st]; }
-  if (badge) { badge.textContent = icons[st] + " " + labels[st]; badge.style.color = colors[st]; }
+  var st     = DB_STATUS || "idle";
+  var icons  = {idle:"☁️", syncing:"🔄", ok:"✅", error:"⚠️"};
+  var colors = {idle:"var(--muted)", syncing:"var(--yellow)", ok:"var(--green)", error:"var(--red)"};
+
+  if (isAdmin) {
+    // Admin : afficher tous les détails
+    var labels = {idle:"Supabase", syncing:"Sync...", ok:"Synchronisé", error:"Erreur sync"};
+    if (el)    { el.style.display="block"; el.textContent=icons[st]+" "+labels[st]; el.style.color=colors[st]; }
+    if (badge) { badge.textContent=icons[st]+" "+labels[st]; badge.style.color=colors[st]; }
+  } else {
+    // RH : juste un point vert "En direct"
+    if (el) {
+      el.style.display = "block";
+      if (st === "ok" || st === "idle") {
+        el.innerHTML = '<span class="live-dot"></span><span style="color:var(--green);font-size:10px">En direct</span>';
+      } else if (st === "syncing") {
+        el.innerHTML = '<span style="color:var(--yellow);font-size:10px">🔄</span>';
+      } else {
+        el.innerHTML = '<span style="color:var(--muted);font-size:10px">●</span>';
+      }
+    }
+    if (badge) badge.style.display = "none";
+  }
 }
 
 async function gsSaveAll() {
@@ -5703,9 +5785,19 @@ function startAutoSync() {
   stopAutoSync();
   if (!DB_CONFIG.enabled || window.location.protocol === "file:") return;
   var btn = document.getElementById("btn-sync-now");
-  if (btn) btn.style.display = "inline-block";
   var btnSave = document.getElementById("btn-save-now");
-  if (btnSave && window.location.protocol !== "file:") btnSave.style.display = "inline-block";
+  var btnCfg  = document.getElementById("btn-gs-config");
+  // Boutons Supabase visibles uniquement pour Admin
+  if (STATE.auth && STATE.auth.role === "admin") {
+    if (btn)    btn.style.display    = "inline-block";
+    if (btnSave && window.location.protocol !== "file:") btnSave.style.display = "inline-block";
+    if (btnCfg) btnCfg.style.display = "inline-block";
+  } else {
+    // RH : masquer tout ce qui concerne Supabase
+    if (btn)    btn.style.display    = "none";
+    if (btnSave) btnSave.style.display = "none";
+    if (btnCfg) btnCfg.style.display  = "none";
+  }
   // Chargement initial au login uniquement
   setTimeout(silentSync, 1000);
   // PAS de setInterval — chaque action sauvegarde immédiatement
