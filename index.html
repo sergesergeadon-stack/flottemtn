@@ -2410,13 +2410,8 @@ async function gsLoadAll() {
   }
 }
 
-async function gsSyncNow() {
-  if (window.location.protocol === "file:") {
-    showToast("💡 Synchronisation disponible uniquement sur Netlify", "warn");
-    return;
-  }
-  await gsLoadAll();
-}
+// gsSyncNow définie plus bas
+
 
 
 
@@ -2959,8 +2954,29 @@ function deleteRow(recUid) {
   const rec = STATE.records.find(r => r._uid === recUid);
   if (rec) addJournalEntry({ type:"RETRAIT", ...rec, date:fmtNow(), motif:"Suppression manuelle" });
   STATE.records = STATE.records.filter(r => r._uid !== recUid);
-  saveAll(); renderTable();
-  showToast("Numéro retiré de la flotte","warn");
+  save("records", STATE.records); // Sauvegarder localement
+  renderTable(); updateStats();
+  showToast("Numéro supprimé ✓", "warn");
+  // Supprimer dans Supabase IMMÉDIATEMENT
+  if (DB_CONFIG.enabled && DB_CONFIG.url && DB_CONFIG.key && window.location.protocol !== "file:") {
+    fetch(DB_CONFIG.url + "/rest/v1/flotte_records?uid=eq." + encodeURIComponent(String(recUid)), {
+      method: "DELETE",
+      headers: {
+        "apikey": DB_CONFIG.key,
+        "Authorization": "Bearer " + DB_CONFIG.key,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      }
+    }).then(function(r) {
+      if (r.ok) {
+        DB_STATUS = "ok"; updateSyncIndicator();
+        console.log("Supprimé dans Supabase ✅");
+      } else {
+        r.text().then(function(t){ console.warn("DELETE erreur:", r.status, t); });
+        DB_STATUS = "error"; updateSyncIndicator();
+      }
+    }).catch(function(e){ console.warn("DELETE fetch error:", e.message); });
+  }
 }
 
 // ─── Edit Modal ────────────────────────────────────────────
@@ -5433,11 +5449,8 @@ async function gsLoadAll() {
   return true;
 }
 
-async function gsSyncNow() {
-  if (!GS_CONFIG.enabled || !GS_CONFIG.url) { openGsModal(); return; }
-  var loaded = await gsLoadAll();
-  if (!loaded) showToast("⚠️ Synchronisation échouée","warn");
-}
+// gsSyncNow définie plus bas
+
 
 // ═══════════════════════════════════════════════════════════
 //  GOOGLE SHEETS — FONCTIONS UI
@@ -5512,9 +5525,32 @@ function gsDeactivate() {
 
 // Bouton sync manuel
 async function gsSyncNow() {
-  if (!GS_CONFIG.enabled || !GS_CONFIG.url) { openGsModal(); return; }
-  const loaded = await gsLoadAll();
-  if (loaded) showToast("✅ Synchronisé avec Supabase");
+  if (!DB_CONFIG.enabled || !DB_CONFIG.url || !DB_CONFIG.key) { openGsModal(); return; }
+  DB_STATUS = "syncing"; updateSyncIndicator();
+  try {
+    var recs = await sbFetch("flotte_records",  "GET", null, "select=*&limit=5000");
+    var reqs = await sbFetch("flotte_requests", "GET", null, "select=*&limit=1000");
+    var usrs = await sbFetch("flotte_users",    "GET", null, "select=*");
+    if (recs && recs.length > 0) {
+      STATE.records = recs.map(function(r,i) {
+        return { _uid:parseInt(r.uid)||(Date.now()+i), id:r.id||"",
+                 msisdn:normMsisdn(r.msisdn)||r.msisdn||"", nom:r.nom||"",
+                 fonction:r.fonction||"", dotation:r.dotation||"", societe:r.societe||"",
+                 zone:r.zone||"", mtrl:r.mtrl||"", imsi:r.imsi||"", remarques:r.remarques||"" };
+      });
+    }
+    if (reqs) STATE.requests = reqs.map(function(r){ return Object.assign({},r,{_uid:parseInt(r.uid)||Date.now()}); });
+    if (usrs) STATE.rhUsers  = usrs.map(function(u){ return Object.assign({},u,{_uid:parseInt(u.uid)||Date.now()}); });
+    save("records",  STATE.records);
+    save("requests", STATE.requests);
+    save("rhUsers",  STATE.rhUsers);
+    try { renderTable(); updateStats(); buildNav(); } catch(e) {}
+    DB_STATUS = "ok"; updateSyncIndicator();
+    showToast("✅ Synchronisation — " + STATE.records.length + " numéros");
+  } catch(e) {
+    DB_STATUS = "error"; updateSyncIndicator();
+    showToast("❌ Erreur: " + e.message, "warn");
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -5584,50 +5620,44 @@ async function silentSync() {
   if (!STATE.auth) return;
   _syncRunning = true;
   try {
-    var recs = await sbFetch("flotte_records",  "GET", null, "select=*&limit=5000");
-    var reqs = await sbFetch("flotte_requests", "GET", null, "select=*&limit=1000");
+    // Charger uniquement les demandes et utilisateurs (pas les records)
+    // Les records sont gérés localement + push immédiat à chaque action
+    var reqs = await sbFetch("flotte_requests", "GET", null, "select=*&limit=1000&order=date.desc");
     var usrs = await sbFetch("flotte_users",    "GET", null, "select=*");
     var changed = false;
-    if (recs) {
-      // Détecter changements : taille OU dotation du premier élément différente
-      var recsChanged = recs.length !== STATE.records.length;
-      if (!recsChanged && recs.length > 0) {
-        var localFirst = STATE.records[0] || {};
-        var remoteFirst = recs[0] || {};
-        recsChanged = (remoteFirst.dotation !== localFirst.dotation) ||
-                      (remoteFirst.nom       !== localFirst.nom);
-      }
-      if (recsChanged) {
-        STATE.records = recs.map(function(r,i) {
-          return { _uid:parseInt(r.uid)||(Date.now()+i), id:r.id||"",
-                   msisdn:normMsisdn(r.msisdn)||r.msisdn||"", nom:r.nom||"",
-                   fonction:r.fonction||"", dotation:r.dotation||"", societe:r.societe||"",
-                   zone:r.zone||"", mtrl:r.mtrl||"", imsi:r.imsi||"", remarques:r.remarques||"" };
-        });
-        changed = true;
-      }
-    }
-    if (reqs && reqs.length !== STATE.requests.length) {
-      STATE.requests = reqs.map(function(r){ return Object.assign({},r,{_uid:parseInt(r.uid)||Date.now()}); });
-      changed = true;
-    }
-    if (usrs && usrs.length !== STATE.rhUsers.length) {
-      STATE.rhUsers = usrs.map(function(u){ return Object.assign({},u,{_uid:parseInt(u.uid)||Date.now()}); });
-      try { localStorage.setItem("flotte_rhUsers", JSON.stringify(STATE.rhUsers)); } catch(e) {}
-      changed = true;
-    }
-    if (changed) {
-      save("records",  STATE.records);
+
+    // Demandes : prendre la version Supabase si elle a plus de demandes
+    if (reqs && reqs.length > STATE.requests.length) {
+      STATE.requests = reqs.map(function(r){
+        return Object.assign({}, r, {_uid: parseInt(r.uid)||Date.now()});
+      });
       save("requests", STATE.requests);
-      save("rhUsers",  STATE.rhUsers);
-      try { renderTable(); } catch(e) {}
+      changed = true;
+    }
+
+    // Utilisateurs RH
+    if (usrs && usrs.length !== STATE.rhUsers.length) {
+      STATE.rhUsers = usrs.map(function(u){
+        return Object.assign({}, u, {_uid: parseInt(u.uid)||Date.now()});
+      });
+      try { localStorage.setItem("flotte_rhUsers", JSON.stringify(STATE.rhUsers)); } catch(e) {}
+      save("rhUsers", STATE.rhUsers);
+      changed = true;
+    }
+
+    if (changed) {
       try { updateStats(); } catch(e) {}
       try { buildNav(); } catch(e) {}
+      try { renderPending(); } catch(e) {}
       DB_STATUS = "ok"; updateSyncIndicator();
       var btn = document.getElementById("btn-sync-now");
       if (btn) { btn.textContent = "✅"; setTimeout(function(){ btn.textContent = "🔄"; }, 1500); }
+    } else {
+      DB_STATUS = "ok"; updateSyncIndicator();
     }
-  } catch(e) { DB_STATUS = "error"; updateSyncIndicator(); }
+  } catch(e) {
+    DB_STATUS = "error"; updateSyncIndicator();
+  }
   _syncRunning = false;
 }
 
