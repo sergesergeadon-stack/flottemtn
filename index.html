@@ -2952,11 +2952,27 @@ function addRecordAsDemande() {
 function deleteRow(recUid) {
   if (!confirm("Supprimer ce numéro de la flotte ?")) return;
   const rec = STATE.records.find(r => r._uid === recUid);
-  if (rec) addJournalEntry({ type:"RETRAIT", ...rec, date:fmtNow(), motif:"Suppression manuelle" });
+  if (!rec) return;
+
+  // Enregistrer dans le journal avec tous les détails
+  addJournalEntry({
+    type: "RETRAIT",
+    date: fmtNow(),
+    msisdn: rec.msisdn,
+    nom: rec.nom,
+    fonction: rec.fonction,
+    dotation: rec.dotation,
+    societe: rec.societe,
+    zone: rec.zone,
+    motif: "Suppression par Admin — " + (STATE.auth ? STATE.auth.name : "Administrateur")
+  });
+
+  // Supprimer localement
   STATE.records = STATE.records.filter(r => r._uid !== recUid);
-  save("records", STATE.records); // Sauvegarder localement
-  renderTable(); updateStats();
-  showToast("Numéro supprimé ✓", "warn");
+  save("records", STATE.records);
+  renderTable(); updateStats(); buildNav();
+  showToast("🗑️ Numéro " + rec.msisdn + " supprimé", "warn");
+
   // Supprimer dans Supabase IMMÉDIATEMENT
   if (DB_CONFIG.enabled && DB_CONFIG.url && DB_CONFIG.key && window.location.protocol !== "file:") {
     fetch(DB_CONFIG.url + "/rest/v1/flotte_records?uid=eq." + encodeURIComponent(String(recUid)), {
@@ -2964,18 +2980,21 @@ function deleteRow(recUid) {
       headers: {
         "apikey": DB_CONFIG.key,
         "Authorization": "Bearer " + DB_CONFIG.key,
-        "Content-Type": "application/json",
         "Accept": "application/json"
       }
     }).then(function(r) {
       if (r.ok) {
         DB_STATUS = "ok"; updateSyncIndicator();
-        console.log("Supprimé dans Supabase ✅");
+        showToast("✅ Suppression synchronisée sur tous les appareils");
       } else {
         r.text().then(function(t){ console.warn("DELETE erreur:", r.status, t); });
         DB_STATUS = "error"; updateSyncIndicator();
+        showToast("⚠️ Suppression locale — erreur Supabase", "warn");
       }
-    }).catch(function(e){ console.warn("DELETE fetch error:", e.message); });
+    }).catch(function(e){
+      console.warn("DELETE fetch error:", e.message);
+      DB_STATUS = "error"; updateSyncIndicator();
+    });
   }
 }
 
@@ -5620,22 +5639,43 @@ async function silentSync() {
   if (!STATE.auth) return;
   _syncRunning = true;
   try {
-    // Charger uniquement les demandes et utilisateurs (pas les records)
-    // Les records sont gérés localement + push immédiat à chaque action
-    var reqs = await sbFetch("flotte_requests", "GET", null, "select=*&limit=1000&order=date.desc");
+    // Charger records + demandes + users depuis Supabase
+    var recs = await sbFetch("flotte_records",  "GET", null, "select=uid,msisdn,nom,fonction,dotation,societe,zone,mtrl,imsi,remarques,id&limit=5000");
+    var reqs = await sbFetch("flotte_requests", "GET", null, "select=*&limit=1000");
     var usrs = await sbFetch("flotte_users",    "GET", null, "select=*");
     var changed = false;
 
-    // Demandes : prendre la version Supabase si elle a plus de demandes
-    if (reqs && reqs.length > STATE.requests.length) {
+    // RECORDS : détecter ajouts ET suppressions
+    if (recs) {
+      var localUids  = new Set(STATE.records.map(function(r){ return String(r._uid); }));
+      var remoteUids = new Set(recs.map(function(r){ return String(r.uid); }));
+      var hasNew     = recs.some(function(r){ return !localUids.has(String(r.uid)); });
+      var hasDeleted = STATE.records.some(function(r){ return !remoteUids.has(String(r._uid)); });
+
+      if (hasNew || hasDeleted) {
+        STATE.records = recs.map(function(r,i) {
+          return { _uid:parseInt(r.uid)||(Date.now()+i), id:r.id||"",
+                   msisdn:normMsisdn(r.msisdn)||r.msisdn||"", nom:r.nom||"",
+                   fonction:r.fonction||"", dotation:r.dotation||"", societe:r.societe||"",
+                   zone:r.zone||"", mtrl:r.mtrl||"", imsi:r.imsi||"", remarques:r.remarques||"" };
+        });
+        save("records", STATE.records);
+        try { renderTable(); updateStats(); } catch(e) {}
+        changed = true;
+      }
+    }
+
+    // DEMANDES : prendre Supabase si différent
+    if (reqs && reqs.length !== STATE.requests.length) {
       STATE.requests = reqs.map(function(r){
         return Object.assign({}, r, {_uid: parseInt(r.uid)||Date.now()});
       });
       save("requests", STATE.requests);
+      try { renderPending(); } catch(e) {}
       changed = true;
     }
 
-    // Utilisateurs RH
+    // UTILISATEURS RH
     if (usrs && usrs.length !== STATE.rhUsers.length) {
       STATE.rhUsers = usrs.map(function(u){
         return Object.assign({}, u, {_uid: parseInt(u.uid)||Date.now()});
@@ -5646,9 +5686,7 @@ async function silentSync() {
     }
 
     if (changed) {
-      try { updateStats(); } catch(e) {}
       try { buildNav(); } catch(e) {}
-      try { renderPending(); } catch(e) {}
       DB_STATUS = "ok"; updateSyncIndicator();
       var btn = document.getElementById("btn-sync-now");
       if (btn) { btn.textContent = "✅"; setTimeout(function(){ btn.textContent = "🔄"; }, 1500); }
