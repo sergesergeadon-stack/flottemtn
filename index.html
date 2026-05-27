@@ -3884,13 +3884,24 @@ function loadFactureFile(input) {
 
       // Parser toutes les lignes de données
       const dataRows = rows.slice(dataStartRow);
+
+      // Debug — afficher les valeurs brutes des premières lignes
+      console.log("=== FACTURE DEBUG ===");
+      console.log("iN=" + iN + " iM=" + iM + " iD=" + iD);
+      if (dataRows[0]) console.log("Ligne 1 brute:", JSON.stringify(dataRows[0].slice(0,9)));
+      if (dataRows[1]) console.log("Ligne 2 brute:", JSON.stringify(dataRows[1].slice(0,9)));
+
       FACTURE_DATA = dataRows
         .filter(r => r[iM] !== undefined && r[iM] !== "")
         .map(r => {
           const msisdn = normMsisdn(r[iM]);
           if (!msisdn || msisdn.length < 8) return null;
-          const rawDot = iD >= 0 ? String(r[iD]||"") : "";
-          const dotation = rawDot.replace(/[^\d]/g,"").replace(/^0+/,"") || "";
+          // Extraire le montant TTC — gérer espaces insécables (\xa0), espaces normaux, virgules
+          var rawDot = iD >= 0 ? String(r[iD]||"") : "";
+          // Supprimer TOUS les types d'espaces (normal, insécable \xa0, fin \u202f)
+          rawDot = rawDot.replace(/[\u00a0\u202f\u2009\u0020\s]/g, "").replace(",", ".");
+          var dotVal = parseFloat(rawDot);
+          var dotation = (!isNaN(dotVal) && dotVal > 0) ? String(Math.round(dotVal)) : "";
           return {
             msisdn,
             dotation,
@@ -3952,106 +3963,75 @@ async function loadFacturePDF(file) {
     const arrayBuffer = await file.arrayBuffer();
     const pdfDoc = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
 
-    let fullText = "";
-    // Extraire le texte à partir de la PAGE 2 (page 1 = en-tête/résumé)
-    for (let p = 2; p <= pdfDoc.numPages; p++) {
-      const page = await pdfDoc.getPage(p);
-      const content = await page.getTextContent();
-      // Reconstituer les lignes en regroupant les items par position Y
-      const items = content.items;
-      const lineMap = {};
-      items.forEach(item => {
-        const y = Math.round(item.transform[5]);
-        if (!lineMap[y]) lineMap[y] = [];
-        lineMap[y].push(item.str);
-      });
-      // Trier par Y décroissant (haut → bas)
-      const ys = Object.keys(lineMap).map(Number).sort((a,b) => b-a);
-      ys.forEach(y => {
-        fullText += lineMap[y].join(" ") + "\n";
-      });
-    }
-
-    // Extraire les 3 données clés : NOM · NUMÉRO · MONTANT TTC
-    // Format facture MTN : NOM | MSISDN | formule | fraisHT | comm | TS3% | TVA18% | MontantTTC
-    const lines = fullText.split("\n").map(l => l.trim()).filter(l => l.length > 3);
-
-    // Tentative 1 : détecter les lignes qui contiennent un MSISDN MTN
-    // et extraire nom (avant) + montant (après)
-    const mtnLineRE = /(.+?)\s+(0[5-9]\d{8})\s+(?:\S+\s+){1,5}(\d[\d\s]*)/;
-
-    // Regex MSISDN MTN CI
-    const msisdnRE = /(?:^|\s|;|,|\|)((?:225[-\s]?)?0[5-9][-\s]?\d{2}[-\s]?\d{2}[-\s]?\d{2}[-\s]?\d{2})(?=$|\s|;|,|\|)/gm;
-    // Regex montant FCFA
-    const amountRE = /(\d[\d ]*(?:[.,]\d+)?)\s*(?:F\.?C\.?F\.?A\.?|FCFA|XOF|\bF\b)/i;
-    // Regex nom : mots en MAJUSCULES (2+ mots) — typique des factures opérateur
-    const nomRE    = /([A-ZÀÂÄÉÈÊËÎÏÔÙÛÜ][A-ZÀÂÄÉÈÊËÎÏÔÙÛÜ\-]{1,}(?:\s+[A-ZÀÂÄÉÈÊËÎÏÔÙÛÜ][A-ZÀÂÄÉÈÊËÎÏÔÙÛÜ\-]{1,}){1,3})/;
-
-    const extracted = [];
+    const extracted  = [];
     const seenMsisdn = new Set();
 
-    lines.forEach((line, idx) => {
-      let m;
-      msisdnRE.lastIndex = 0;
-      while ((m = msisdnRE.exec(line)) !== null) {
-        const msisdn = normMsisdn(m[1]);
-        if (!msisdn || seenMsisdn.has(msisdn)) continue;
-        seenMsisdn.add(msisdn);
+    // Extraction basée sur les cellules du tableau
+    // Col 0=Nom, Col 1=MSISDN, Col 7=MontantTTC
+    // Stratégie : regrouper par cellule en utilisant les lignes du tableau
 
-        // Chercher dotation sur la même ligne ou les 3 suivantes
-        let dotation = "";
-        const context = lines.slice(idx, idx+4).join(" ");
-        const amMatch = amountRE.exec(context);
-        if (amMatch) {
-          dotation = amMatch[1].replace(/[\s]/g,"").replace(",",".");
-          dotation = String(Math.round(parseFloat(dotation)));
-        }
+    for (let p = 2; p <= pdfDoc.numPages; p++) {
+      const page    = await pdfDoc.getPage(p);
+      const content = await page.getTextContent();
+      const vp      = page.getViewport({ scale: 1 });
+      const H       = vp.height;
 
-        // Chercher le nom : sur la même ligne (typiquement avant ou après le numéro)
-        let nom = "";
-        // Supprimer le numéro de la ligne pour chercher le nom
-        const lineWithoutNum = line.replace(m[1],"").replace(/0[5-9]\d{8}/g,"").trim();
-        // Chercher un groupe de mots en majuscules (nom d'abonné)
-        const nomMatch = nomRE.exec(lineWithoutNum);
-        if (nomMatch) {
-          // Filtrer les faux positifs (mots clés génériques)
-          const skipWords = /^(MSISDN|ABONNE|CLIENT|MONTANT|FACTURE|FORFAIT|MTN|PORTEO|DOTATION|TOTAL|SOLDE)$/;
-          const words = nomMatch[1].split(/\s+/).filter(w => w.length > 1 && !skipWords.test(w));
-          if (words.length >= 2) nom = words.join(" ");
-        }
-        // Chercher nom sur la même ligne (avant le numéro = col 1)
-        if (!nom) {
-          const before = lineWithoutNum.split(/\s{2,}/)[0].trim();
-          if (before.length > 3 && /[A-Z]{2,}/.test(before)) nom = before;
-        }
-        // Chercher sur les lignes adjacentes
-        if (!nom) {
-          for (let k = Math.max(0,idx-1); k <= Math.min(lines.length-1, idx+2); k++) {
-            if (k === idx) continue;
-            const adjNom = nomRE.exec(lines[k]);
-            if (adjNom) {
-              const skipWords = /^(MSISDN|ABONNE|CLIENT|MONTANT|FACTURE|FORFAIT|MTN|PORTEO|DOTATION|POWERPRO|PPRO|REFERENCE|FORMULES)$/;
-              const words = adjNom[1].split(/\s+/).filter(w => w.length > 1 && !skipWords.test(w));
-              if (words.length >= 1) { nom = words.join(" "); break; }
-            }
-          }
-        }
+      // Collecter tous les items avec position
+      const items = content.items.map(item => ({
+        x: item.transform[4],
+        y: Math.round((H - item.transform[5]) * 10) / 10,
+        str: (item.str || "").trim()
+      })).filter(i => i.str);
 
-        extracted.push({ msisdn, dotation, nom });
-      }
-    });
+      // Détecter les séparateurs de lignes du tableau
+      // Les MSISDN délimitent les rangées
+      const msisdnItems = items.filter(i =>
+        i.x > 120 && i.x < 230 && /^[05-9]/.test(i.str)
+      );
 
-    // Fallback : chercher les numéros partout si peu de résultats
-    if (extracted.length < 2) {
-      const allNums = fullText.match(/0[5-9]\d{8}/g) || [];
-      allNums.forEach(raw => {
-        const msisdn = normMsisdn(raw);
-        if (msisdn && !seenMsisdn.has(msisdn)) {
-          seenMsisdn.add(msisdn);
-          extracted.push({ msisdn, dotation: "", nom: "" });
-        }
+      const rowYs = [];
+      msisdnItems.forEach(mi => {
+        const ms = normMsisdn(mi.str);
+        if (/^0[5-9]\d{8}$/.test(ms)) rowYs.push({ y: mi.y, ms });
+      });
+
+      rowYs.forEach((row, idx) => {
+        if (seenMsisdn.has(row.ms)) return;
+
+        // Fenêtre Y de cette rangée
+        const yStart = row.y - 2;
+        const yEnd   = idx < rowYs.length - 1
+          ? rowYs[idx+1].y - 2
+          : row.y + 20;
+
+        // Collecter les items de cette rangée
+        const rowItems = items.filter(i => i.y >= yStart && i.y < yEnd);
+
+        // Nom : colonne x < 120 (MSISDN commence à x=128, on exclut)
+        const nomItems = rowItems
+          .filter(i => i.x < 120)
+          .sort((a,b) => a.y - b.y || a.x - b.x);
+        const skipW = /^(POWERPRO|PPRO|FORMULE|MTN|HT|TTC|TVA|ABONNEMENT)$/i;
+        const nom = nomItems.map(i => i.str)
+          .filter(s => !skipW.test(s) && !/^0[5-9]\d{8}$/.test(normMsisdn(s)) && !/^\d{9,10}$/.test(s.replace(/\s/g,"")))
+          .join(" ").trim();
+
+        // MontantTTC : colonne x entre 490 et 545, même Y que le MSISDN (±5px)
+        const montantItems = rowItems
+          .filter(i => i.x >= 490 && i.x <= 545 && Math.abs(i.y - row.y) <= 6)
+          .sort((a,b) => a.x - b.x);
+        const montantRaw = montantItems.map(i =>
+          i.str.replace(/[\u00a0\u202f\s]/g,"")
+        ).join("");
+        const dv = parseFloat(montantRaw.replace(",","."));
+        const dotation = (!isNaN(dv) && dv > 100) ? String(Math.round(dv)) : "";
+
+        seenMsisdn.add(row.ms);
+        extracted.push({ msisdn: row.ms, dotation, nom });
       });
     }
+
+    const re_msisdn = /^0[5-9]\d{8}$/;
 
     if (!extracted.length) {
       showFactureError(
