@@ -5911,42 +5911,19 @@ async function silentSync() {
   if (!STATE.auth) return;
   _syncRunning = true;
   try {
-    // Charger records + demandes + users depuis Supabase
-    var recs = await sbFetch("flotte_records",  "GET", null, "select=uid,msisdn,nom,fonction,dotation,societe,zone,mtrl,imsi,remarques,id&limit=5000");
+    // Charger UNIQUEMENT les demandes et utilisateurs depuis Supabase
+    // Les records sont gérés en PUSH — on ne les tire JAMAIS automatiquement
     var reqs = await sbFetch("flotte_requests", "GET", null, "select=*&limit=1000");
     var usrs = await sbFetch("flotte_users",    "GET", null, "select=*");
     var changed = false;
-
-    // RECORDS : détecter ajouts ET suppressions
-    if (recs) {
-      var localUids  = new Set(STATE.records.map(function(r){ return String(r._uid); }));
-      var remoteUids = new Set(recs.map(function(r){ return String(r.uid); }));
-      var hasNew     = recs.some(function(r){ return !localUids.has(String(r.uid)); });
-      var hasDeleted = STATE.records.some(function(r){ return !remoteUids.has(String(r._uid)); });
-
-      if (hasNew || hasDeleted) {
-        STATE.records = recs.map(function(r,i) {
-          return { _uid:parseInt(r.uid)||(Date.now()+i), id:r.id||"",
-                   msisdn:normMsisdn(r.msisdn)||r.msisdn||"", nom:r.nom||"",
-                   fonction:r.fonction||"", dotation:r.dotation||"", societe:r.societe||"",
-                   zone:r.zone||"", mtrl:r.mtrl||"", imsi:r.imsi||"", remarques:r.remarques||"" };
-        });
-        save("records", STATE.records);
-        try { renderTable(); updateStats(); } catch(e) {}
-        changed = true;
-      }
-    }
 
     // DEMANDES : détecter tout changement (nombre ET statuts)
     if (reqs) {
       var reqsChanged = reqs.length !== STATE.requests.length;
       if (!reqsChanged && reqs.length > 0) {
-        // Vérifier si un statut a changé
         var localMap = {};
         STATE.requests.forEach(function(r){ localMap[String(r._uid)] = r.status; });
-        reqsChanged = reqs.some(function(r){
-          return localMap[String(r.uid)] !== r.status;
-        });
+        reqsChanged = reqs.some(function(r){ return localMap[String(r.uid)] !== r.status; });
       }
       if (reqsChanged) {
         STATE.requests = reqs.map(function(r){
@@ -5969,11 +5946,6 @@ async function silentSync() {
     }
 
     if (changed) {
-      try { buildNav(); } catch(e) {}
-      DB_STATUS = "ok"; updateSyncIndicator();
-      var btn = document.getElementById("btn-sync-now");
-      if (btn) { btn.textContent = "✅"; setTimeout(function(){ btn.textContent = "🔄"; }, 1500); }
-    } else {
       DB_STATUS = "ok"; updateSyncIndicator();
     }
   } catch(e) {
@@ -5994,15 +5966,12 @@ function startAutoSync() {
     if (btnSave) btnSave.style.display = "inline-block";
   }
 
-  // Sync immédiate au login
+  // Chargement UNIQUE au login — après on ne tire plus jamais depuis Supabase
   setTimeout(silentSync, 1000);
 
-  // ✅ Sync automatique toutes les 10 secondes
-  _syncInterval = setInterval(function() {
-    if (STATE.auth) silentSync();
-  }, 10000);
-
-  console.log("✅ Auto-sync démarré — toutes les 10 secondes");
+  // PAS de setInterval — chaque action pousse vers Supabase immédiatement
+  // Le tirage automatique crée des conflits quand on est en train de travailler
+  console.log("✅ Sync initialisée — mode PUSH uniquement");
 }
 
 function stopAutoSync() {
