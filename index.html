@@ -236,19 +236,32 @@
   .login-sub { font-size: 11px; color: var(--muted); letter-spacing: 3px; text-transform: uppercase; margin-top: 3px; }
   .pin-input { letter-spacing: 8px; font-size: 22px; text-align: center; }
   /* Cercles PIN visuels */
-  .pin-circles { display: flex; justify-content: center; gap: 18px; padding: 18px 12px; background: var(--input-bg); border: 1.5px solid var(--brd); border-radius: 7px; cursor: text; transition: border-color .3s; }
-  .pin-circles.focused { border-color: var(--yellow); }
-  /* Cercle vide par défaut — gris */
-  .pin-dot { width: 20px; height: 20px; border-radius: 50%; border: 2.5px solid #444; background: transparent; transition: all .25s cubic-bezier(.34,1.56,.64,1); }
-  /* Cercle rempli — jaune avec animation bounce */
-  .pin-dot.filled { background: var(--yellow); border-color: var(--yellow); box-shadow: 0 0 14px #FFCC0088; transform: scale(1.15); }
-  /* Cercle actif — pulse en attente */
-  .pin-dot.active { border-color: var(--yellow); border-width: 2.5px; animation: pulse-ring .8s ease-in-out infinite; }
+  .pin-circles { display: flex; justify-content: center; gap: 16px; padding: 20px 12px; background: var(--input-bg); border: 1.5px solid var(--brd); border-radius: 10px; cursor: pointer; transition: border-color .3s; }
+  .pin-circles.focused { border-color: var(--yellow); box-shadow: 0 0 0 3px #FFCC0022; }
+  .pin-dot { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid #555; background: transparent; transition: all .2s cubic-bezier(.34,1.56,.64,1); }
+  .pin-dot.filled { background: var(--yellow); border-color: var(--yellow); box-shadow: 0 0 12px #FFCC0088; transform: scale(1.18); }
+  .pin-dot.active { border-color: var(--yellow); animation: pulse-ring .9s ease-in-out infinite; }
   @keyframes pulse-ring {
-    0%   { box-shadow: 0 0 0 0 #FFCC0055; transform: scale(1); }
-    50%  { box-shadow: 0 0 0 6px #FFCC0000; transform: scale(1.05); }
-    100% { box-shadow: 0 0 0 0 #FFCC0000; transform: scale(1); }
+    0%,100% { box-shadow: 0 0 0 0 #FFCC0055; transform: scale(1); }
+    50%      { box-shadow: 0 0 0 5px #FFCC0000; transform: scale(1.08); }
   }
+  @keyframes shake {
+    0%,100% { transform: translateX(0); }
+    20%,60% { transform: translateX(-6px); }
+    40%,80% { transform: translateX(6px); }
+  }
+  /* Clavier numérique */
+  .numpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+  .numpad-btn {
+    background: var(--s2); border: 1.5px solid var(--brd); border-radius: 10px;
+    color: var(--text); font-size: 20px; font-weight: 600; padding: 14px 0;
+    cursor: pointer; transition: all .15s; user-select: none; text-align: center;
+    font-family: var(--font);
+  }
+  .numpad-btn:active, .numpad-btn.pressed { background: var(--yellow); color: #111; transform: scale(.94); border-color: var(--yellow); }
+  .numpad-btn.del { font-size: 16px; color: var(--muted); }
+  .numpad-btn.zero { grid-column: 2; }
+  .numpad-btn.del  { grid-column: 3; }
   .alert-box { padding: 8px 12px; border-radius: 6px; font-size: 12px; margin-bottom: 12px; text-align: center; }
   .alert-red   { background: #3b0000; color: var(--red); border: 1px solid var(--red)44; }
   .alert-green { background: #052e16; color: var(--green); border: 1px solid var(--green)44; }
@@ -355,20 +368,21 @@
 
       <!-- Admin -->
       <div id="login-admin-panel">
-        <div class="field">
-          <div class="lbl">Code PIN</div>
+        <div class="field" style="margin-bottom:0">
+          <div class="lbl" style="text-align:center;margin-bottom:12px;font-size:11px;letter-spacing:2px">CODE PIN</div>
           <div class="pin-circles" id="pin-circles-display" onclick="document.getElementById('pin-input').focus()">
             <div class="pin-dot active" id="pin-d0"></div>
             <div class="pin-dot" id="pin-d1"></div>
             <div class="pin-dot" id="pin-d2"></div>
             <div class="pin-dot" id="pin-d3"></div>
           </div>
-          <input type="password" id="pin-input" style="position:absolute;opacity:0;width:1px;height:1px;top:0;left:0;pointer-events:none"
-            maxlength="8"
+          <input type="password" id="pin-input"
+            style="position:absolute;opacity:0;width:1px;height:1px;top:0;left:0;pointer-events:none"
+            maxlength="6" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
             onfocus="document.getElementById('pin-circles-display').classList.add('focused')"
             onblur="document.getElementById('pin-circles-display').classList.remove('focused')">
         </div>
-        <button class="btn btn-yellow btn-block btn-lg" onclick="doAdminLogin()">Connexion →</button>
+        <button class="btn btn-yellow btn-block btn-lg" style="margin-top:14px" onclick="doAdminLogin()">Connexion →</button>
       </div>
 
       <!-- RH -->
@@ -874,6 +888,15 @@
           </div>
           <input type="file" id="facture-file-input" accept=".xlsx,.xls,.csv,.pdf,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;z-index:-1" onchange="loadFactureFile(this)">
           <div id="facture-load-error" class="alert-box alert-red" style="display:none;margin-top:10px"></div>
+        </div>
+
+        <!-- Bouton synchronisation complète base ↔ facture -->
+        <div id="btn-sync-base-facture" onclick="syncBaseAvecFacture()"
+          style="display:none;background:linear-gradient(135deg,#1a3a1a,#0d2a0d);border:2px solid var(--green);
+                 border-radius:10px;padding:14px 18px;margin-bottom:16px;cursor:pointer;text-align:center;
+                 color:var(--green);font-weight:700;font-size:13px;transition:all .2s"
+          onmouseover="this.style.background='linear-gradient(135deg,#1e4a1e,#103010)'"
+          onmouseout="this.style.background='linear-gradient(135deg,#1a3a1a,#0d2a0d)'">
         </div>
 
         <!-- Résultats -->
@@ -2422,6 +2445,47 @@ const PLACEHOLDERS = new Set(["",".","-","--","---","----","------","nan","NaN",
 const KEY_FIELDS = ["nom","fonction","dotation","societe","zone","mtrl"];
 
 // ═══════════════════════════════════════════════════════════
+//  CLAVIER NUMÉRIQUE PIN
+// ═══════════════════════════════════════════════════════════
+var _pinValue  = "";
+var _pinMaxLen = 4;
+
+function numpadFocus() {
+  document.getElementById("pin-circles-display").classList.add("focused");
+  try { document.getElementById("pin-input").focus(); } catch(e) {}
+}
+
+function numpadPress(digit) {
+  if (_pinValue.length >= _pinMaxLen) return;
+  _pinValue += String(digit);
+  var inp = document.getElementById("pin-input");
+  if (inp) inp.value = _pinValue;
+  updatePinDotsFromValue();
+  if (_pinValue.length === _pinMaxLen) {
+    setTimeout(doAdminLogin, 200);
+  }
+}
+
+function numpadDel() {
+  if (!_pinValue.length) return;
+  _pinValue = _pinValue.slice(0, -1);
+  var inp = document.getElementById("pin-input");
+  if (inp) inp.value = _pinValue;
+  updatePinDotsFromValue();
+}
+
+function updatePinDotsFromValue() {
+  var len = _pinValue.length;
+  for (var i = 0; i < _pinMaxLen; i++) {
+    var dot = document.getElementById("pin-d" + i);
+    if (!dot) continue;
+    dot.classList.remove("filled","active");
+    if (i < len) dot.classList.add("filled");
+    else if (i === len) dot.classList.add("active");
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 //  CONFIGURATION GOOGLE SHEETS
 // ═══════════════════════════════════════════════════════════
 var GS_SYNC_STATUS = "idle";
@@ -2663,15 +2727,27 @@ function switchLoginTab(tab) {
 }
 
 function doAdminLogin() {
-  const pin = document.getElementById("pin-input").value;
+  const pin = _pinValue || document.getElementById("pin-input").value;
   if (pin === STATE.adminPin) {
     STATE.auth = { role: "admin", name: "Administrateur", company: "" };
+    _pinValue = "";
+    document.getElementById("pin-input").value = "";
     startApp();
   } else {
     const err = document.getElementById("login-err");
-    err.textContent = "Code PIN incorrect";
+    err.textContent = "Code PIN incorrect ❌";
     err.style.display = "block";
+    // Vider et animer l'erreur
+    _pinValue = "";
     document.getElementById("pin-input").value = "";
+    // Animation shake sur les cercles
+    var circles = document.getElementById("pin-circles-display");
+    if (circles) {
+      circles.style.animation = "shake .4s ease";
+      setTimeout(function(){ circles.style.animation = ""; }, 400);
+    }
+    updatePinDotsFromValue();
+    setTimeout(function(){ err.style.display = "none"; }, 2000);
   }
 }
 
@@ -2730,10 +2806,27 @@ function startApp() {
   // Supabase — seulement sur Netlify, pas en local
   if (DB_CONFIG.enabled && window.location.protocol !== "file:") {
     setTimeout(function() {
+      // Charger le PIN Admin depuis Supabase
+      if (DB_CONFIG.url && DB_CONFIG.key) {
+        fetch(DB_CONFIG.url + "/rest/v1/flotte_config?key=eq.adminPin&select=value", {
+          headers: {
+            "apikey": DB_CONFIG.key,
+            "Authorization": "Bearer " + DB_CONFIG.key,
+            "Accept": "application/json"
+          }
+        }).then(function(r){ return r.json(); })
+        .then(function(data) {
+          if (data && data.length && data[0].value) {
+            STATE.adminPin = data[0].value;
+            save("pin", data[0].value);
+            console.log("PIN Admin chargé depuis Supabase ✅");
+          }
+        }).catch(function(){});
+      }
       gsLoadAll().then(function() {
-        startAutoSync(); // Démarrer l'auto-sync après le premier chargement
+        startAutoSync();
       }).catch(function(){
-        startAutoSync(); // Démarrer quand même
+        startAutoSync();
       });
     }, 800);
   }
@@ -3661,8 +3754,24 @@ function changePin() {
   save("pin", np);
   document.getElementById("new-pin-input").value = "";
   document.getElementById("current-pin-display").textContent = np;
-  msgEl.textContent = "✓ PIN mis à jour avec succès"; msgEl.className="alert-box alert-green"; msgEl.style.display="block";
-  setTimeout(()=>msgEl.style.display="none",3000);
+  msgEl.textContent = "✓ PIN mis à jour"; msgEl.className="alert-box alert-green"; msgEl.style.display="block";
+  setTimeout(()=>msgEl.style.display="none", 3000);
+
+  // Synchroniser le PIN dans Supabase
+  if (DB_CONFIG.enabled && DB_CONFIG.url && DB_CONFIG.key && window.location.protocol !== "file:") {
+    fetch(DB_CONFIG.url + "/rest/v1/flotte_config", {
+      method: "POST",
+      headers: {
+        "apikey": DB_CONFIG.key, "Authorization": "Bearer " + DB_CONFIG.key,
+        "Content-Type": "application/json", "Accept": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal"
+      },
+      body: JSON.stringify([{ key: "adminPin", value: np }])
+    }).then(function(r) {
+      if (r.ok) showToast("✅ PIN synchronisé sur tous les appareils");
+      else showToast("⚠️ PIN sauvé localement — erreur Supabase", "warn");
+    }).catch(function(){ showToast("⚠️ PIN sauvé localement — pas de réseau", "warn"); });
+  }
 }
 
 function clearJournal() {
@@ -4132,6 +4241,20 @@ function runComparison() {
   document.getElementById("ftab-mod").textContent = `✏️ Modifiés (${modNums.length})`;
   document.getElementById("ftab-ok").textContent  = `🔵 Identiques (${okNums.length})`;
 
+  // Afficher le bouton de synchronisation complète
+  const totalFacture = FACTURE_DATA.length;
+  const syncBtn = document.getElementById("btn-sync-base-facture");
+  if (syncBtn) {
+    syncBtn.style.display = "block";
+    syncBtn.innerHTML = `🔄 Synchroniser la base avec la facture (${totalFacture} numéros)<br>
+      <small style="font-weight:400;font-size:11px">
+        ✅ +${newNums.length} ajouts &nbsp;·&nbsp; 
+        🗑️ -${delNums.length} suppressions &nbsp;·&nbsp; 
+        ✏️ ${modNums.length} mises à jour &nbsp;·&nbsp; 
+        ✔️ ${okNums.length} identiques
+      </small>`;
+  }
+
   document.getElementById("facture-results").style.display = "block";
 
   // Auto-select most interesting tab
@@ -4139,6 +4262,93 @@ function runComparison() {
   else if (delNums.length) switchFactureTab("del");
   else if (modNums.length) switchFactureTab("mod");
   else                     switchFactureTab("ok");
+}
+
+async function syncBaseAvecFacture() {
+  if (!COMP_RESULT || !FACTURE_DATA) { showToast("Lancez d'abord la comparaison","warn"); return; }
+
+  const { newNums, delNums, modNums } = COMP_RESULT;
+  const total = FACTURE_DATA.length;
+
+  const msg = `Synchroniser la base avec la facture ?\n\n` +
+    `✅ ${newNums.length} nouveaux numéros seront AJOUTÉS\n` +
+    `🗑️ ${delNums.length} numéros absents de la facture seront SUPPRIMÉS\n` +
+    `✏️ ${modNums.length} dotations seront MISES À JOUR\n\n` +
+    `La base passera à ${total} numéros (comme la facture).\n` +
+    `Cette action est irréversible. Continuer ?`;
+
+  if (!confirm(msg)) return;
+
+  const btn = document.getElementById("btn-sync-base-facture");
+  if (btn) { btn.innerHTML = "⏳ Synchronisation en cours..."; btn.style.pointerEvents = "none"; }
+  showToast("⏳ Synchronisation en cours...");
+
+  let added = 0, deleted = 0, updated = 0;
+
+  // 1. AJOUTER les nouveaux
+  newNums.forEach(r => {
+    const newRec = {
+      _uid: uid(), id: nextId(),
+      msisdn:   r.msisdn,
+      nom:      r.nom_facture   || "",
+      fonction: "",
+      dotation: r.dotation_facture || "",
+      societe:  "", zone: "", mtrl: "", imsi: "", remarques: ""
+    };
+    STATE.records.push(newRec);
+    addJournalEntry({ type:"AJOUT", ...newRec, date:fmtNow(), motif:"Sync facture — nouveau numéro" });
+    added++;
+  });
+
+  // 2. SUPPRIMER les absents de la facture
+  const factureSet = new Set(FACTURE_DATA.map(r => r.msisdn));
+  delNums.forEach(r => {
+    const rec = STATE.records.find(x => x.msisdn === r.msisdn);
+    if (rec) addJournalEntry({ type:"RETRAIT", ...rec, date:fmtNow(), motif:"Sync facture — absent de la facture" });
+    STATE.records = STATE.records.filter(x => x.msisdn !== r.msisdn);
+    // Supprimer dans Supabase
+    if (DB_CONFIG.enabled && DB_CONFIG.url && DB_CONFIG.key && window.location.protocol !== "file:") {
+      fetch(DB_CONFIG.url + "/rest/v1/flotte_records?msisdn=eq." + encodeURIComponent(r.msisdn), {
+        method: "DELETE",
+        headers: { "apikey": DB_CONFIG.key, "Authorization": "Bearer " + DB_CONFIG.key }
+      }).catch(function(){});
+    }
+    deleted++;
+  });
+
+  // 3. METTRE À JOUR les dotations modifiées
+  modNums.forEach(r => {
+    const rec = STATE.records.find(x => x.msisdn === r.msisdn);
+    if (rec) {
+      addJournalEntry({ type:"MODIFICATION", ...rec, date:fmtNow(),
+        motif:`Sync facture — dotation: ${rec.dotation} → ${r.dotation_facture}` });
+      rec.dotation = r.dotation_facture;
+      if (r.nom_facture && !rec.nom) rec.nom = r.nom_facture;
+      updated++;
+    }
+  });
+
+  // 4. Renuméroter les IDs
+  STATE.records.forEach((r, i) => { r.id = String(i + 1); });
+
+  // 5. Sauvegarder
+  saveAll();
+  try { renderTable(); updateStats(); buildNav(); } catch(e) {}
+
+  // 6. Afficher résultat
+  const msg2 = `✅ Synchronisation terminée !\n+${added} ajoutés · -${deleted} supprimés · ✏️${updated} mis à jour\nTotal : ${STATE.records.length} numéros`;
+  showToast(msg2);
+
+  if (btn) {
+    btn.innerHTML = `✅ Synchronisation terminée — ${STATE.records.length} numéros dans la base`;
+    btn.style.background = "linear-gradient(135deg,#0d2a0d,#051505)";
+    btn.style.pointerEvents = "none";
+  }
+
+  // Réinitialiser la comparaison
+  COMP_RESULT = null;
+  FACTURE_DATA = null;
+  document.getElementById("facture-results").style.display = "none";
 }
 
 function switchFactureTab(tab) {
@@ -5727,14 +5937,25 @@ async function silentSync() {
       }
     }
 
-    // DEMANDES : prendre Supabase si différent
-    if (reqs && reqs.length !== STATE.requests.length) {
-      STATE.requests = reqs.map(function(r){
-        return Object.assign({}, r, {_uid: parseInt(r.uid)||Date.now()});
-      });
-      save("requests", STATE.requests);
-      try { renderPending(); } catch(e) {}
-      changed = true;
+    // DEMANDES : détecter tout changement (nombre ET statuts)
+    if (reqs) {
+      var reqsChanged = reqs.length !== STATE.requests.length;
+      if (!reqsChanged && reqs.length > 0) {
+        // Vérifier si un statut a changé
+        var localMap = {};
+        STATE.requests.forEach(function(r){ localMap[String(r._uid)] = r.status; });
+        reqsChanged = reqs.some(function(r){
+          return localMap[String(r.uid)] !== r.status;
+        });
+      }
+      if (reqsChanged) {
+        STATE.requests = reqs.map(function(r){
+          return Object.assign({}, r, {_uid: parseInt(r.uid)||Date.now()});
+        });
+        save("requests", STATE.requests);
+        try { renderPending(); updateStats(); buildNav(); } catch(e) {}
+        changed = true;
+      }
     }
 
     // UTILISATEURS RH
@@ -5764,23 +5985,24 @@ async function silentSync() {
 function startAutoSync() {
   stopAutoSync();
   if (!DB_CONFIG.enabled || window.location.protocol === "file:") return;
-  var btn = document.getElementById("btn-sync-now");
+  if (!DB_CONFIG.url || !DB_CONFIG.key) return;
+
+  var btn     = document.getElementById("btn-sync-now");
   var btnSave = document.getElementById("btn-save-now");
-  var btnCfg  = document.getElementById("btn-gs-config");
-  // Boutons Supabase visibles uniquement pour Admin
   if (STATE.auth && STATE.auth.role === "admin") {
-    if (btn)    btn.style.display    = "inline-block";
-    if (btnSave && window.location.protocol !== "file:") btnSave.style.display = "inline-block";
-    if (btnCfg) btnCfg.style.display = "inline-block";
-  } else {
-    // RH : masquer tout ce qui concerne Supabase
-    if (btn)    btn.style.display    = "none";
-    if (btnSave) btnSave.style.display = "none";
-    if (btnCfg) btnCfg.style.display  = "none";
+    if (btn)     btn.style.display     = "inline-block";
+    if (btnSave) btnSave.style.display = "inline-block";
   }
-  // Chargement initial au login uniquement
+
+  // Sync immédiate au login
   setTimeout(silentSync, 1000);
-  // PAS de setInterval — chaque action sauvegarde immédiatement
+
+  // ✅ Sync automatique toutes les 10 secondes
+  _syncInterval = setInterval(function() {
+    if (STATE.auth) silentSync();
+  }, 10000);
+
+  console.log("✅ Auto-sync démarré — toutes les 10 secondes");
 }
 
 function stopAutoSync() {
@@ -5827,6 +6049,13 @@ try { loadAll(); } catch(e) {
 }
 try { applyTheme(); } catch(e) {}
 try { document.getElementById("login-screen").style.display = "flex"; } catch(e) {}
+// Focus automatique sur le PIN dès l'ouverture
+setTimeout(function() {
+  try {
+    var pinInput = document.getElementById("pin-input");
+    if (pinInput) pinInput.focus();
+  } catch(e) {}
+}, 300);
 
 // Initialiser Google Sheets seulement si URL valide configurée
 setTimeout(function() {
