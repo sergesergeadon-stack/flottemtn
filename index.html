@@ -347,6 +347,8 @@
     .import-modes { flex-direction: column; }
   }
 </style>
+<!-- EmailJS -->
+  <script src='https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js' defer></script>
 </head>
 <body>
 
@@ -946,6 +948,18 @@
     </div>
 
   </div><!-- /main -->
+
+  <!-- Vue Audit -->
+  <div id="view-audit" class="view">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div class="card-title" style="margin:0">🔍 Audit — Qui a fait quoi</div>
+        <button class="btn btn-dark btn-sm" onclick="exportAudit()">↓ Exporter</button>
+      </div>
+      <div id="audit-list" style="max-height:65vh;overflow-y:auto"></div>
+    </div>
+  </div>
+
 </div><!-- /app-screen -->
 
 <!-- ─── Toast ─────────────────────────────────────── -->
@@ -1010,7 +1024,75 @@
   </div>
 </div>
 
-<!-- ─── Modal Google Sheets Config ──────────────────── -->
+<!-- ─── Modal Demande Accès RH ──────────────────────── -->
+<div id="demande-acces-modal" class="modal-bg">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" style="color:var(--blue)">📝 Demande d'accès RH</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">Votre demande sera envoyée à l'administrateur</div>
+      </div>
+      <button class="btn btn-dark btn-sm" onclick="document.getElementById('demande-acces-modal').classList.remove('open')">✕</button>
+    </div>
+    <div class="field">
+      <div class="lbl">Nom complet <span class="lbl-req">*</span></div>
+      <input type="text" id="da-nom" placeholder="Ex: KOUAME Jean">
+    </div>
+    <div class="field">
+      <div class="lbl">Adresse email <span class="lbl-req">*</span></div>
+      <input type="email" id="da-email" placeholder="votre@email.com">
+    </div>
+    <div class="field">
+      <div class="lbl">Société <span class="lbl-req">*</span></div>
+      <select id="da-societe">
+        <option value="">-- Choisir --</option>
+        <option value="PORTEO BTP">PORTEO BTP</option>
+<option value="PORTEO SA">PORTEO SA</option>
+<option value="EKACICO">EKACICO</option>
+<option value="BWOOD">BWOOD</option>
+<option value="BSTEEL">BSTEEL</option>
+<option value="EKACICO CI">EKACICO CI</option>
+<option value="GRAVEL IVOIRE">GRAVEL IVOIRE</option>
+<option value="TECHNIC-BETON">TECHNIC-BETON</option>
+<option value="MAITRE JARDIN">MAITRE JARDIN</option>
+<option value="AXE DECO">AXE DECO</option>
+<option value="ADRESS IMMO">ADRESS IMMO</option>
+<option value="CONSIEGERIE +">CONSIEGERIE +</option>
+        <option value="AUTRE">Autre</option>
+      </select>
+    </div>
+    <div class="field">
+      <div class="lbl">Poste / Fonction</div>
+      <input type="text" id="da-fonction" placeholder="Ex: Responsable RH">
+    </div>
+    <div class="field">
+      <div class="lbl">Message (optionnel)</div>
+      <textarea id="da-message" rows="2" placeholder="Pourquoi avez-vous besoin d'un accès ?"></textarea>
+    </div>
+    <div id="da-result" style="display:none;padding:10px;border-radius:6px;font-size:13px;margin-bottom:8px"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-yellow" style="flex:1;padding:11px;font-weight:700" onclick="submitDemandeAcces()">
+        📤 Envoyer la demande
+      </button>
+      <button class="btn btn-dark" style="padding:11px 16px" onclick="document.getElementById('demande-acces-modal').classList.remove('open')">
+        Annuler
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Modal Export ──────────────────────────────── -->
+<div id="export-modal" class="modal-bg">
+  <div class="modal" style="max-width:380px;max-height:80vh;overflow-y:auto">
+    <div class="modal-header">
+      <div class="modal-title">📥 Exporter les données</div>
+      <button class="btn btn-dark btn-sm" onclick="closeExportModal()">✕</button>
+    </div>
+    <div id="export-modal-body"></div>
+  </div>
+</div>
+
+<!-- ─── Modal Google Sheets Config ──────────────────────── -->
 <div id="gs-modal" class="modal-bg">
   <div class="modal" style="max-width:560px">
     <div class="modal-header">
@@ -2485,6 +2567,29 @@ function updatePinDotsFromValue() {
   }
 }
 
+
+// ═══════════════════════════════════════════════════════════
+//  SÉCURITÉ — Hash SHA-256 pour les mots de passe
+// ═══════════════════════════════════════════════════════════
+async function hashPassword(password) {
+  try {
+    const msgBuffer = new TextEncoder().encode(password);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    const hashArray  = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch(e) {
+    // Fallback si crypto non disponible
+    return password;
+  }
+}
+
+async function verifyPassword(password, hash) {
+  // Compatibilité : si le hash stocké n'est pas un hash SHA-256 (ancien mdp en clair)
+  if (hash.length !== 64) return password === hash;
+  const computed = await hashPassword(password);
+  return computed === hash;
+}
+
 // ═══════════════════════════════════════════════════════════
 //  CONFIGURATION GOOGLE SHEETS
 // ═══════════════════════════════════════════════════════════
@@ -2708,7 +2813,7 @@ function switchLoginTab(tab) {
           document.getElementById("login-rh-empty").style.display = "none";
           document.getElementById("login-rh-form").style.display  = "block";
         } else {
-          document.getElementById("login-rh-empty").innerHTML = "<div class=\"empty\"><div class=\"empty-icon\">🔒</div>Aucun compte RH.<br>Contactez l\'administrateur.<br><button class=\"btn btn-dark btn-sm\" style=\"margin-top:12px\" onclick=\"switchLoginTab(&quot;rh&quot;)\">🔄 Actualiser</button></div>";
+          document.getElementById("login-rh-empty").innerHTML = "<div class=\"empty\"><div class=\"empty-icon\">🔒</div>Aucun compte RH créé.<br><small style=\"color:var(--muted)\">Contactez l\'administrateur ou</small><br><button class=\"btn btn-yellow btn-sm\" style=\"margin-top:10px\" onclick=\"openDemandeAcces()\">📝 Demander un accès</button><br><button class=\"btn btn-dark btn-sm\" style=\"margin-top:6px\" onclick=\"switchLoginTab(&quot;rh&quot;)\">🔄 Actualiser</button></div>";
           document.getElementById("login-rh-empty").style.display = "block";
           document.getElementById("login-rh-form").style.display  = "none";
         }
@@ -2726,28 +2831,66 @@ function switchLoginTab(tab) {
   }
 }
 
+var _pinAttempts  = 0;
+var _pinBlockedUntil = 0;
+
 function doAdminLogin() {
+  const now = Date.now();
+  const err = document.getElementById("login-err");
+
+  // Vérifier si bloqué
+  if (_pinBlockedUntil > now) {
+    var secs = Math.ceil((_pinBlockedUntil - now) / 1000);
+    err.textContent = "🔒 Trop de tentatives — réessayez dans " + secs + "s";
+    err.style.color = "var(--red)";
+    err.style.display = "block";
+    _pinValue = ""; document.getElementById("pin-input").value = "";
+    updatePinDotsFromValue();
+    return;
+  }
+
   const pin = _pinValue || document.getElementById("pin-input").value;
+
   if (pin === STATE.adminPin) {
+    _pinAttempts = 0; _pinBlockedUntil = 0;
     STATE.auth = { role: "admin", name: "Administrateur", company: "" };
     _pinValue = "";
     document.getElementById("pin-input").value = "";
+    err.style.display = "none";
     startApp();
   } else {
-    const err = document.getElementById("login-err");
-    err.textContent = "Code PIN incorrect ❌";
-    err.style.display = "block";
-    // Vider et animer l'erreur
+    _pinAttempts++;
     _pinValue = "";
     document.getElementById("pin-input").value = "";
-    // Animation shake sur les cercles
+
+    // Bloquer après 3 tentatives
+    if (_pinAttempts >= 3) {
+      _pinBlockedUntil = now + 30000; // 30 secondes
+      _pinAttempts = 0;
+      err.textContent = "🔒 3 tentatives incorrectes — bloqué 30 secondes";
+      err.style.color = "var(--red)";
+      // Décompte
+      var countdown = setInterval(function() {
+        var remaining = Math.ceil((_pinBlockedUntil - Date.now()) / 1000);
+        if (remaining <= 0) {
+          clearInterval(countdown);
+          err.style.display = "none";
+        } else {
+          err.textContent = "🔒 Bloqué — réessayez dans " + remaining + "s";
+        }
+      }, 1000);
+    } else {
+      var restantes = 3 - _pinAttempts;
+      err.textContent = "❌ PIN incorrect — " + restantes + " tentative(s) restante(s)";
+    }
+    err.style.display = "block";
+    // Animation shake
     var circles = document.getElementById("pin-circles-display");
     if (circles) {
       circles.style.animation = "shake .4s ease";
       setTimeout(function(){ circles.style.animation = ""; }, 400);
     }
     updatePinDotsFromValue();
-    setTimeout(function(){ err.style.display = "none"; }, 2000);
   }
 }
 
@@ -4886,6 +5029,7 @@ function doActionPrint(action) {
   .sig-head.t { background: #B8860B; }
   .sig-head.h { background: #166534; }
 </style>
+
 </head>
 <body>
 ${buildFicheWordHTML(rec)}
@@ -5071,7 +5215,8 @@ body{font-family:Arial,sans-serif;font-size:9.5pt;color:#111;background:#fff}
 /* Footer */
 .ft{display:flex;justify-content:space-between;align-items:center;border-top:1px solid #E5E7EB;padding-top:4px;font-size:7pt;color:#9CA3AF}
 @media print{html,body{width:210mm;height:297mm}@page{size:A4 portrait;margin:0}}
-</style></head>
+</style>
+</head>
 <body><div class="page">
 
 <div class="hdr">
@@ -6086,6 +6231,206 @@ async function saveNow() {
 
 // visibilitychange désactivé — évite d'écraser une saisie en cours
 // document.addEventListener("visibilitychange", ...)
+
+
+// ═══════════════════════════════════════════════════════════
+//  DEMANDE D'ACCÈS RH
+// ═══════════════════════════════════════════════════════════
+function openDemandeAcces() {
+  document.getElementById("demande-acces-modal").classList.add("open");
+  document.getElementById("da-result").style.display = "none";
+}
+
+async function submitDemandeAcces() {
+  var nom      = (document.getElementById("da-nom").value||"").trim();
+  var email    = (document.getElementById("da-email").value||"").trim();
+  var societe  = (document.getElementById("da-societe").value||"").trim();
+  var fonction = (document.getElementById("da-fonction").value||"").trim();
+  var message  = (document.getElementById("da-message").value||"").trim();
+  var resEl    = document.getElementById("da-result");
+
+  if (!nom || !email || !societe) {
+    resEl.textContent = "⚠️ Nom, email et société sont obligatoires";
+    resEl.style.background = "var(--red)22"; resEl.style.color = "var(--red)";
+    resEl.style.display = "block"; return;
+  }
+
+  // Envoyer un email à l'administrateur via EmailJS
+  try {
+    emailjs.send("service_flottemtn", "template_acces_rh", {
+      to_email:    "serge.adon@porteo-group.com",
+      from_name:   nom,
+      from_email:  email,
+      societe:     societe,
+      fonction:    fonction,
+      message:     message || "Aucun message",
+      date:        new Date().toLocaleString("fr-FR"),
+      reply_to:    email
+    }).then(function() {
+      console.log("Email envoyé ✅");
+    }).catch(function(err) {
+      console.warn("EmailJS:", err);
+    });
+  } catch(e) { console.warn("EmailJS non configuré"); }
+
+  // Créer une demande spéciale de type ACCES dans flotte_requests
+  var req = {
+    _uid: uid(), date: fmtNow(),
+    action: "ACCES",
+    msisdn: "", nom, fonction, dotation: "",
+    societe, zone: "", imsi: "",
+    motif: message || "Demande d'accès RH",
+    rh_name: nom, rh_company: societe,
+    status: "PENDING_ACCES",
+    email: email  // on stocke l'email dans le champ zone temporairement
+  };
+  req.zone = email; // stocker email dans zone pour récupération
+
+  STATE.requests.push(req);
+  save("requests", STATE.requests);
+  updateStats(); buildNav();
+
+  // Envoyer vers Supabase
+  if (DB_CONFIG.enabled && DB_CONFIG.url && DB_CONFIG.key && window.location.protocol !== "file:") {
+    var reqData = { uid:String(req._uid), date:req.date, action:"ACCES",
+      msisdn:"", nom:req.nom, fonction:req.fonction, dotation:"",
+      societe:req.societe, zone:email, imsi:"",
+      motif:req.motif, rh_name:req.nom, rh_company:req.societe, status:"PENDING_ACCES" };
+    fetch(DB_CONFIG.url + "/rest/v1/flotte_requests", {
+      method:"POST",
+      headers:{"apikey":DB_CONFIG.key,"Authorization":"Bearer "+DB_CONFIG.key,
+               "Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"},
+      body: JSON.stringify([reqData])
+    }).catch(function(){});
+  }
+
+  resEl.textContent = "✅ Demande envoyée ! L'administrateur vous contactera pour vous communiquer vos identifiants.";
+  resEl.style.background = "var(--green)22"; resEl.style.color = "var(--green)";
+  resEl.style.display = "block";
+  setTimeout(function(){
+    document.getElementById("demande-acces-modal").classList.remove("open");
+    ["da-nom","da-email","da-fonction","da-message"].forEach(function(id){
+      var el=document.getElementById(id); if(el) el.value="";
+    });
+    document.getElementById("da-societe").value = "";
+  }, 3000);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  EXPORT PAR FILTRE (société, fonction, etc.)
+// ═══════════════════════════════════════════════════════════
+function exportFiltered(filterKey, filterVal) {
+  var data = STATE.records;
+  if (filterKey && filterVal) {
+    data = data.filter(function(r){ return (r[filterKey]||"").toLowerCase() === filterVal.toLowerCase(); });
+  }
+  if (!data.length) { showToast("Aucune donnée à exporter","warn"); return; }
+
+  // Construire le CSV/Excel
+  var headers = ["N°","MSISDN","NOM","FONCTION","DOTATION","SOCIETE","ZONE","MTRL","IMSI","REMARQUES"];
+  var rows = [headers];
+  data.forEach(function(r,i) {
+    rows.push([r.id||i+1, r.msisdn, r.nom, r.fonction, r.dotation,
+               r.societe, r.zone, r.mtrl, r.imsi, r.remarques]);
+  });
+
+  // Utiliser SheetJS si disponible
+  if (typeof XLSX !== "undefined") {
+    var wb = XLSX.utils.book_new();
+    var ws = XLSX.utils.aoa_to_sheet(rows);
+    // Style en-tête
+    ws['!cols'] = [5,16,28,24,12,18,20,12,20,20].map(function(w){ return {wch:w}; });
+    var title = filterVal ? ("FlotteMTN_" + filterVal.replace(/\s/g,"_")) : "FlotteMTN_Export";
+    XLSX.utils.book_append_sheet(wb, ws, title.substring(0,31));
+    XLSX.writeFile(wb, title + "_" + new Date().toISOString().slice(0,10) + ".xlsx");
+    showToast("✅ Export Excel — " + data.length + " numéros");
+  } else {
+    // Fallback CSV
+    var csv = rows.map(function(r){ return r.map(function(c){ return '"'+(c||"").toString().replace(/"/g,'""')+'"'; }).join(","); }).join("\r\n");;
+    var blob = new Blob(["﻿"+csv], {type:"text/csv;charset=utf-8"});
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (filterVal ? "FlotteMTN_"+filterVal : "FlotteMTN_Export") + ".csv";
+    a.click();
+    showToast("✅ Export CSV — " + data.length + " numéros");
+  }
+}
+
+function openExportModal() {
+  // Construire la liste des filtres disponibles
+  var societes  = [...new Set(STATE.records.map(function(r){ return r.societe; }).filter(Boolean))].sort();
+  var fonctions = [...new Set(STATE.records.map(function(r){ return r.fonction; }).filter(Boolean))].sort();
+
+  var html2 = '<div style="display:flex;flex-direction:column;gap:8px">';
+  html2 += '<button class="btn btn-dark btn-block" style="text-align:left;padding:10px 14px" onclick="exportFiltered();closeExportModal()">📊 Tout exporter (' + STATE.records.length + ' numéros)</button>';
+  html2 += '<div style="font-size:11px;color:var(--muted);margin:4px 0 2px;text-transform:uppercase;letter-spacing:1px">Par société</div>';
+  societes.forEach(function(s){
+    var count = STATE.records.filter(function(r){ return r.societe===s; }).length;
+    html2 += '<button class="btn btn-dark btn-block" style="text-align:left;padding:8px 14px;font-size:12px" onclick="exportFiltered(&quot;societe&quot;,&quot;'+s+'&quot;);closeExportModal()">🏢 '+s+' ('+count+')</button>';
+  });
+  html2 += '<div style="font-size:11px;color:var(--muted);margin:4px 0 2px;text-transform:uppercase;letter-spacing:1px">Par fonction</div>';
+  fonctions.slice(0,15).forEach(function(f){
+    var count = STATE.records.filter(function(r){ return r.fonction===f; }).length;
+    html2 += '<button class="btn btn-dark btn-block" style="text-align:left;padding:8px 14px;font-size:12px" onclick="exportFiltered(&quot;fonction&quot;,&quot;'+f+'&quot;);closeExportModal()">👤 '+f+' ('+count+')</button>';
+  });
+  html2 += '</div>';
+
+  document.getElementById("export-modal-body").innerHTML = html2;
+  document.getElementById("export-modal").classList.add("open");
+}
+
+function closeExportModal() {
+  document.getElementById("export-modal").classList.remove("open");
+}
+
+// ═══════════════════════════════════════════════════════════
+//  AUDIT — QUI A FAIT QUOI
+// ═══════════════════════════════════════════════════════════
+function renderAudit() {
+  var entries = STATE.journal.slice(0, 200);
+  var html2 = entries.map(function(e) {
+    var color = e.type==="AJOUT" ? "var(--green)" : e.type==="RETRAIT" ? "var(--red)" : e.type==="MODIFICATION" ? "var(--yellow)" : "var(--blue)";
+    var icon  = e.type==="AJOUT" ? "➕" : e.type==="RETRAIT" ? "🗑️" : e.type==="MODIFICATION" ? "✏️" : "📋";
+    return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--brd);align-items:flex-start">' +
+      '<span style="font-size:16px">' + icon + '</span>' +
+      '<div style="flex:1">' +
+        '<div style="font-size:12px;font-weight:600;color:' + color + '">' + (e.type||"ACTION") + '</div>' +
+        '<div style="font-size:13px;color:var(--text)">' + (e.nom||e.msisdn||"") + ' — ' + (e.msisdn||"") + '</div>' +
+        '<div style="font-size:11px;color:var(--muted)">' + (e.motif||"") + '</div>' +
+        '<div style="font-size:10px;color:var(--dim);margin-top:2px">' +
+          (e.admin ? '👤 '+e.admin+' · ' : '') + (e.date||"") +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }).join("");
+  var container = document.getElementById("audit-list");
+  if (container) container.innerHTML = html2 || '<div class="empty">Aucune activité enregistrée</div>';
+}
+
+
+
+function exportAudit() {
+  var entries = STATE.journal;
+  if (!entries.length) { showToast("Aucune activité à exporter","warn"); return; }
+  var headers = ["DATE","TYPE","MSISDN","NOM","DOTATION","SOCIETE","ZONE","MOTIF","PAR"];
+  var rows = [headers];
+  entries.forEach(function(e) {
+    rows.push([e.date||"", e.type||"", e.msisdn||"", e.nom||"",
+               e.dotation||"", e.societe||"", e.zone||"", e.motif||"", e.admin||""]);
+  });
+  if (typeof XLSX !== "undefined") {
+    var wb = XLSX.utils.book_new();
+    var ws = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(wb, ws, "Audit");
+    XLSX.writeFile(wb, "FlotteMTN_Audit_" + new Date().toISOString().slice(0,10) + ".xlsx");
+    showToast("✅ Audit exporté — " + entries.length + " entrées");
+  }
+}
+
+// Initialiser EmailJS au démarrage
+try {
+  emailjs.init({ publicKey: "VOTRE_PUBLIC_KEY_EMAILJS" });
+} catch(e) {}
 
 // FIN DES SCRIPTS
 try { loadAll(); } catch(e) { 
