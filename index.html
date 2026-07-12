@@ -949,6 +949,20 @@
 
   </div><!-- /main -->
 
+  <!-- Vue Historique des lignes résiliées -->
+  <div id="view-historique" class="view">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+        <div>
+          <div class="card-title" style="margin:0">📋 Historique des lignes</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">Numéros résiliés — jamais supprimés</div>
+        </div>
+        <button class="btn btn-dark btn-sm" onclick="exportHistorique()">↓ Exporter</button>
+      </div>
+      <div id="historique-list" style="overflow-x:auto"></div>
+    </div>
+  </div>
+
   <!-- Vue Audit -->
   <div id="view-audit" class="view">
     <div class="card">
@@ -2737,7 +2751,8 @@ function buildDNNotif(e) {
 }
 
 function stats() {
-  const total   = STATE.records.length;
+  const total   = STATE.records.filter(r => r.actif !== false).length; // Actifs uniquement
+  const resilies = STATE.records.filter(r => r.actif === false).length;
   const indispo = STATE.records.filter(r => r.fonction?.toUpperCase() === "INDISPONIBLE").length;
   const missing = STATE.records.filter(hasMissing).length;
   const actifs  = total - indispo;
@@ -4400,175 +4415,204 @@ function runComparison() {
   else                     switchFactureTab("ok");
 }
 
+// ═══════════════════════════════════════════════════════════
+//  IMPORT INTELLIGENT FACTURE MTN
+//  - Mise à jour sans suppression physique
+//  - Suppressions logiques (statut = Résilié)
+//  - Journal d'import complet
+// ═══════════════════════════════════════════════════════════
 async function syncBaseAvecFacture() {
-  if (!COMP_RESULT || !FACTURE_DATA) { showToast("Lancez d'abord la comparaison","warn"); return; }
+  if (!COMP_RESULT || !FACTURE_DATA) {
+    showToast("Lancez d'abord la comparaison","warn"); return;
+  }
 
-  const { newNums, delNums, modNums } = COMP_RESULT;
-  const total = FACTURE_DATA.length;
+  const { newNums, delNums, modNums, okNums } = COMP_RESULT;
+  const dateFacture = new Date().toISOString().slice(0,10);
+  const nomFichier  = document.getElementById("facture-file-name")?.textContent || "facture.pdf";
+  const startTime   = Date.now();
 
-  const msg = "Mettre à jour la base avec la facture ?\n\n" +
-    "✅ +" + newNums.length + " nouveaux numéros ajoutés\n" +
-    "🗑️ -" + delNums.length + " numéros absents retirés\n" +
-    "✏️ " + modNums.length + " dotations mises à jour\n\n" +
-    "⚠️ Les données existantes (société, fonction, zone, matricule)\n" +
-    "sont CONSERVÉES — seuls nom et dotation sont mis à jour.\n\n" +
-    "La base passera à " + total + " numéros.\nContinuer ?";
-
+  const msg = "Importer intelligemment la facture ?\n\n" +
+    "\u2705 " + newNums.length + " nouveaux num\u00e9ros \u2192 ajout\u00e9s\n" +
+    "\u270f\ufe0f " + modNums.length + " dotations modifi\u00e9es \u2192 mises \u00e0 jour\n" +
+    "\u26aa " + okNums.length  + " identiques \u2192 inchang\u00e9s\n" +
+    "\uD83D\uDD34 " + delNums.length + " absents \u2192 Statut R\u00e9sili\u00e9 (jamais supprim\u00e9s)\n\n" +
+    "Continuer ?";
+    "Continuer ?";
   if (!confirm(msg)) return;
 
   const btn = document.getElementById("btn-sync-base-facture");
-  if (btn) { btn.innerHTML = "⏳ Mise à jour en cours..."; btn.style.pointerEvents = "none"; }
+  if (btn) { btn.innerHTML = "⏳ Import en cours..."; btn.style.pointerEvents = "none"; }
 
-  let added = 0, deleted = 0, updated = 0, alertCount = 0;
+  let nbAjouts = 0, nbModifs = 0, nbResilies = 0;
 
-  // 1. METTRE À JOUR les existants — NE PAS TOUCHER aux données déjà remplies
-  modNums.forEach(function(r) {
-    var rec = STATE.records.find(function(x){ return x.msisdn === r.msisdn; });
-    if (rec) {
-      var oldDot = rec.dotation;
-      // Mettre à jour UNIQUEMENT dotation et nom si vide
-      rec.dotation = r.dotation_facture || rec.dotation;
-      if (r.nom_facture && (!rec.nom || rec.nom.trim() === "")) rec.nom = r.nom_facture;
-      // NE PAS TOUCHER : societe, fonction, zone, mtrl, imsi, remarques
-      if (oldDot !== rec.dotation) {
-        addJournalEntry({ type:"MODIFICATION", msisdn:rec.msisdn, nom:rec.nom,
-          dotation:rec.dotation, date:fmtNow(),
-          motif:"Facture — dotation: " + oldDot + " → " + rec.dotation });
+  // ── 1. METTRE À JOUR les existants (dotation + nom + date facture) ──
+  STATE.records.forEach(function(rec) {
+    // Mise à jour depuis facture si le numéro est dans la facture
+    var factureEntry = FACTURE_DATA.find(function(f){ return f.msisdn === rec.msisdn; });
+    if (factureEntry) {
+      // Mettre à jour dotation et nom seulement si changé
+      if (factureEntry.dotation && factureEntry.dotation !== rec.dotation) {
+        rec.dotation = factureEntry.dotation;
+        nbModifs++;
       }
-      updated++;
+      if (factureEntry.nom && !rec.nom) rec.nom = factureEntry.nom;
+      // Toujours mettre à jour date et montant facture
+      rec.derniere_facture = dateFacture;
+      rec.dernier_montant  = factureEntry.dotation || rec.dotation;
+      // Réactiver si était résilié
+      if (!rec.actif) {
+        rec.actif       = true;
+        rec.statut      = "Actif";
+        rec.date_sortie = "";
+        addJournalEntry({ type:"REACTIVATION", msisdn:rec.msisdn, nom:rec.nom,
+          dotation:rec.dotation, societe:rec.societe, date:fmtNow(),
+          motif:"Réapparu dans la facture " + dateFacture, admin: STATE.auth?.name||"Admin" });
+      }
     }
   });
 
-  // 2. AJOUTER les nouveaux — avec alerte si société/fonction manquante
-  var newAlerts = [];
+  // ── 2. AJOUTER les nouveaux numéros ──────────────────────
   newNums.forEach(function(r) {
     var newRec = {
       _uid: uid(), id: nextId(),
       msisdn:   r.msisdn,
       nom:      r.nom_facture || "",
-      dotation: r.dotation_facture || "",
-      // Champs vides — à compléter par les RH
-      fonction: "", societe: "", zone: "", mtrl: "", imsi: "", remarques: ""
+      fonction: "", dotation: r.dotation_facture || "",
+      societe:  "", zone: "", mtrl: "", imsi: "", remarques: "",
+      // Cycle de vie
+      actif:       true, statut: "Actif",
+      date_entree: dateFacture, date_sortie: "",
+      derniere_facture: dateFacture,
+      dernier_montant:  r.dotation_facture || "",
     };
     STATE.records.push(newRec);
     addJournalEntry({ type:"AJOUT", msisdn:newRec.msisdn, nom:newRec.nom,
-      dotation:newRec.dotation, date:fmtNow(), motif:"Facture — nouveau numéro" });
-    newAlerts.push(newRec.msisdn);
-    alertCount++;
-    added++;
+      dotation:newRec.dotation, date:fmtNow(),
+      motif:"Nouveau dans la facture " + dateFacture, admin: STATE.auth?.name||"Admin" });
+    nbAjouts++;
   });
 
-  // 3. RETIRER les absents de la facture — archiver + supprimer
-  var archivesToSave = [];
+  // ── 3. RÉSILIER les absents (JAMAIS supprimer) ───────────
   delNums.forEach(function(r) {
-    var rec = STATE.records.find(function(x){ return x.msisdn === r.msisdn; });
+    var rec = STATE.records.find(function(x){ return x.msisdn === r.msisdn && x.actif !== false; });
     if (rec) {
-      addJournalEntry({ type:"RETRAIT", msisdn:rec.msisdn, nom:rec.nom,
-        societe:rec.societe, dotation:rec.dotation, date:fmtNow(),
-        motif:"Facture — absent de la facture" });
-      archivesToSave.push({
-        uid: String(rec._uid) + "_arch", date_retrait: fmtNow(),
-        msisdn: rec.msisdn, nom: rec.nom||"", fonction: rec.fonction||"",
-        dotation: rec.dotation||"", societe: rec.societe||"", zone: rec.zone||"",
-        mtrl: rec.mtrl||"", imsi: rec.imsi||"",
-        motif: "Import facture — absent", retire_par: STATE.auth ? STATE.auth.name : "Admin"
-      });
+      rec.actif       = false;
+      rec.statut      = "Résilié";
+      rec.date_sortie = dateFacture;
+      addJournalEntry({ type:"RESILIATION", msisdn:rec.msisdn, nom:rec.nom,
+        dotation:rec.dotation, societe:rec.societe, date:fmtNow(),
+        motif:"Absent de la facture " + dateFacture, admin: STATE.auth?.name||"Admin" });
+      // Archiver dans Supabase
+      if (DB_CONFIG.enabled && DB_CONFIG.url && DB_CONFIG.key && window.location.protocol !== "file:") {
+        fetch(DB_CONFIG.url + "/rest/v1/flotte_archives", {
+          method:"POST",
+          headers:{"apikey":DB_CONFIG.key,"Authorization":"Bearer "+DB_CONFIG.key,
+                   "Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"},
+          body: JSON.stringify([{
+            uid: String(rec._uid)+"_arch_"+dateFacture,
+            date_retrait: dateFacture, msisdn:rec.msisdn, nom:rec.nom||"",
+            fonction:rec.fonction||"", dotation:rec.dotation||"",
+            societe:rec.societe||"", zone:rec.zone||"", mtrl:rec.mtrl||"",
+            imsi:rec.imsi||"", motif:"Absent facture "+dateFacture,
+            retire_par: STATE.auth?.name||"Admin"
+          }])
+        }).catch(function(){});
+      }
+      nbResilies++;
     }
-    STATE.records = STATE.records.filter(function(x){ return x.msisdn !== r.msisdn; });
-    deleted++;
   });
 
-  // Envoyer les archives vers Supabase
-  if (archivesToSave.length && DB_CONFIG.enabled && DB_CONFIG.url && DB_CONFIG.key && window.location.protocol !== "file:") {
-    fetch(DB_CONFIG.url + "/rest/v1/flotte_archives", {
-      method: "POST",
-      headers: { "apikey":DB_CONFIG.key, "Authorization":"Bearer "+DB_CONFIG.key,
-                 "Content-Type":"application/json", "Prefer":"resolution=merge-duplicates,return=minimal" },
-      body: JSON.stringify(archivesToSave)
-    }).catch(function(){});
-  }
-
-  // Dédoublonner la base par MSISDN (garder le dernier)
-  var msisdnSeen = new Set();
-  STATE.records = STATE.records.filter(function(r) {
-    if (msisdnSeen.has(r.msisdn)) return false;
-    msisdnSeen.add(r.msisdn);
-    return true;
+  // ── 4. Renuméroter uniquement les actifs ─────────────────
+  var idCounter = 1;
+  STATE.records.forEach(function(r) {
+    if (r.actif !== false) { r.id = String(idCounter++); }
   });
 
-  // 4. Compter les incomplets critiques (société ou fonction manquante)
-  var incompletsCritiques = STATE.records.filter(function(r){
-    return !r.societe || !r.fonction;
-  });
+  // ── 5. Créer l'entrée du journal d'import ────────────────
+  var duree = ((Date.now() - startTime) / 1000).toFixed(1);
+  var importLog = {
+    _uid: uid(),
+    type: "IMPORT_FACTURE",
+    date: fmtNow(),
+    nom: nomFichier,
+    motif: "Import facture " + dateFacture +
+           " | +" + nbAjouts + " ajouts" +
+           " | ✏️" + nbModifs + " modifs" +
+           " | 🔴" + nbResilies + " résiliés" +
+           " | ⏱️" + duree + "s",
+    admin: STATE.auth?.name || "Admin",
+    msisdn: "", societe: "", zone: "",
+    dotation: String(STATE.records.filter(function(r){ return r.actif !== false; }).length),
+    fonction: duree + "s"
+  };
+  STATE.journal.unshift(importLog);
 
-  // 5. Renuméroter
-  STATE.records.forEach(function(r, i){ r.id = String(i + 1); });
-
-  // 6. Sauvegarder LOCALEMENT
+  // ── 6. Sauvegarder localement ────────────────────────────
   saveAll();
   try { renderTable(); updateStats(); buildNav(); } catch(e) {}
 
-  // 7. Afficher résultat avec alertes
-  var resultMsg = "✅ Base mise à jour — " + STATE.records.length + " numéros\n" +
-    "+ " + added + " ajoutés · - " + deleted + " retirés · ✏️ " + updated + " mis à jour";
-  showToast(resultMsg);
-
-  // 8. Alerte rouge si nouveaux sans société/fonction
-  if (alertCount > 0) {
-    showToast("🔴 " + alertCount + " nouveaux numéros sans société/fonction — à compléter par les RH !", "warn");
-  }
-
-  // 9. Alerte générale incomplets critiques
-  if (incompletsCritiques.length > 0) {
-    setTimeout(function() {
-      showToast("⚠️ " + incompletsCritiques.length + " numéros sans société ou fonction — voir onglet Incomplets", "warn");
-    }, 2000);
-  }
-
-  // 10. POUSSER vers Supabase
+  // ── 7. Pousser vers Supabase ─────────────────────────────
   if (DB_CONFIG.enabled && DB_CONFIG.url && DB_CONFIG.key && window.location.protocol !== "file:") {
-    if (btn) btn.innerHTML = "📤 Envoi vers Supabase (" + STATE.records.length + " numéros)...";
+    if (btn) btn.innerHTML = "📤 Envoi vers Supabase...";
+
+    // Supprimer tous les anciens et réinsérer
+    var allRecs = STATE.records.map(function(r) {
+      return {
+        uid: String(r._uid), id: r.id||"", msisdn: r.msisdn||"", nom: r.nom||"",
+        fonction: r.fonction||"", dotation: r.dotation||"", societe: r.societe||"",
+        zone: r.zone||"", mtrl: r.mtrl||"", imsi: r.imsi||"", remarques: r.remarques||"",
+        // Nouveaux champs cycle de vie
+        actif: r.actif !== false,
+        statut: r.statut || "Actif",
+        date_entree: r.date_entree || "",
+        date_sortie: r.date_sortie || "",
+        derniere_facture: r.derniere_facture || "",
+        dernier_montant: r.dernier_montant || "",
+      };
+    });
+
     try {
-      // Supprimer tous les anciens
-      await fetch(DB_CONFIG.url + "/rest/v1/flotte_records?uid=neq.XXXXX_DELETE_ALL", {
-        method: "DELETE",
-        headers: { "apikey": DB_CONFIG.key, "Authorization": "Bearer " + DB_CONFIG.key }
+      // Supprimer les anciens
+      await fetch(DB_CONFIG.url + "/rest/v1/flotte_records?uid=neq.PLACEHOLDER", {
+        method:"DELETE",
+        headers:{"apikey":DB_CONFIG.key,"Authorization":"Bearer "+DB_CONFIG.key}
       });
-      // Insérer les nouveaux par chunks
-      var allRecs = STATE.records.map(function(r) {
-        return { uid:String(r._uid), id:r.id||"", msisdn:r.msisdn||"", nom:r.nom||"",
-                 fonction:r.fonction||"", dotation:r.dotation||"", societe:r.societe||"",
-                 zone:r.zone||"", mtrl:r.mtrl||"", imsi:r.imsi||"", remarques:r.remarques||"" };
-      });
-      for (var i = 0; i < allRecs.length; i += 200) {
-        if (btn) btn.innerHTML = "📤 " + Math.min(i+200, allRecs.length) + "/" + allRecs.length + "...";
+      // Insérer par chunks
+      for (var ci = 0; ci < allRecs.length; ci += 200) {
+        if (btn) btn.innerHTML = "📤 " + Math.min(ci+200,allRecs.length) + "/" + allRecs.length + "...";
         await fetch(DB_CONFIG.url + "/rest/v1/flotte_records", {
-          method: "POST",
-          headers: { "apikey": DB_CONFIG.key, "Authorization": "Bearer " + DB_CONFIG.key,
-                     "Content-Type": "application/json",
-                     "Prefer": "resolution=merge-duplicates,return=minimal" },
-          body: JSON.stringify(allRecs.slice(i, i+200))
+          method:"POST",
+          headers:{"apikey":DB_CONFIG.key,"Authorization":"Bearer "+DB_CONFIG.key,
+                   "Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"},
+          body: JSON.stringify(allRecs.slice(ci, ci+200))
         });
       }
       DB_STATUS = "ok"; updateSyncIndicator();
-      showToast("✅ " + STATE.records.length + " numéros synchronisés dans Supabase !");
-      if (btn) { btn.innerHTML = "✅ Mise à jour terminée — " + STATE.records.length + " numéros";
-                 btn.style.background = "linear-gradient(135deg,#0d2a0d,#051505)"; }
     } catch(e) {
-      showToast("⚠️ Sauvegarde locale OK — erreur Supabase: " + e.message, "warn");
-      if (btn) btn.innerHTML = "⚠️ Erreur Supabase — données locales OK";
+      showToast("⚠️ Erreur Supabase: " + e.message, "warn");
     }
-  } else {
-    if (btn) { btn.innerHTML = "✅ Base mise à jour — " + STATE.records.length + " numéros";
-               btn.style.pointerEvents = "none"; }
   }
 
-  COMP_RESULT = null;
-  FACTURE_DATA = null;
+  // ── 8. Résultat final ────────────────────────────────────
+  var actifs = STATE.records.filter(function(r){ return r.actif !== false; }).length;
+  var resilies = STATE.records.filter(function(r){ return r.actif === false; }).length;
+
+  if (btn) {
+    btn.innerHTML = "✅ Import terminé — " + actifs + " actifs | " + resilies + " résiliés";
+    btn.style.background = "linear-gradient(135deg,#0d2a0d,#051505)";
+    btn.style.pointerEvents = "none";
+  }
+
+  showToast("✅ Import terminé en " + duree + "s — " + actifs + " lignes actives");
+  if (nbAjouts)   setTimeout(function(){ showToast("➕ " + nbAjouts + " nouveaux numéros ajoutés"); }, 1000);
+  if (nbResilies) setTimeout(function(){ showToast("🔴 " + nbResilies + " numéros résiliés (conservés)","warn"); }, 2000);
+
+  COMP_RESULT = null; FACTURE_DATA = null;
   document.getElementById("facture-results").style.display = "none";
   var syncBtn = document.getElementById("btn-sync-base-facture");
   if (syncBtn) syncBtn.style.display = "none";
 }
+
 
 function switchFactureTab(tab) {
   FACTURE_TAB = tab;
@@ -6431,6 +6475,71 @@ function exportAudit() {
 try {
   emailjs.init({ publicKey: "VOTRE_PUBLIC_KEY_EMAILJS" });
 } catch(e) {}
+
+
+// ═══════════════════════════════════════════════════════════
+//  HISTORIQUE DES LIGNES RÉSILIÉES
+// ═══════════════════════════════════════════════════════════
+function renderHistorique() {
+  var resilies = STATE.records.filter(function(r){ return r.actif === false || r.statut === "Résilié"; });
+  var container = document.getElementById("historique-list");
+  if (!container) return;
+
+  if (!resilies.length) {
+    container.innerHTML = '<div class="empty"><div class="empty-icon">✅</div>Aucun numéro résilié</div>';
+    return;
+  }
+
+  var headers = ["MSISDN","NOM","SOCIÉTÉ","FONCTION","DOTATION","DATE ENTRÉE","DATE SORTIE","DERNIÈRE FACTURE","MONTANT","STATUT"];
+  var rows = resilies.map(function(r) {
+    return [
+      '<span style="color:var(--yellow);font-family:monospace">' + (r.msisdn||"") + '</span>',
+      r.nom||"",
+      '<span style="color:var(--blue)">' + (r.societe||"—") + '</span>',
+      r.fonction||"—",
+      r.dotation ? r.dotation + ' F' : "—",
+      r.date_entree||"—",
+      '<span style="color:var(--red)">' + (r.date_sortie||"—") + '</span>',
+      r.derniere_facture||"—",
+      r.dernier_montant ? r.dernier_montant + ' F' : "—",
+      '<span style="background:var(--red)22;color:var(--red);padding:2px 8px;border-radius:10px;font-size:11px">' + (r.statut||"Résilié") + '</span>'
+    ];
+  });
+
+  var tbl = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+  tbl += '<tr>' + headers.map(function(h){
+    return '<th style="background:var(--s2);padding:8px 10px;text-align:left;white-space:nowrap;font-size:10px;color:var(--muted);border-bottom:2px solid var(--brd)">' + h + '</th>';
+  }).join('') + '</tr>';
+
+  rows.forEach(function(row) {
+    tbl += '<tr style="border-bottom:1px solid var(--brd)">' +
+      row.map(function(cell){
+        return '<td style="padding:7px 10px;vertical-align:middle">' + cell + '</td>';
+      }).join('') + '</tr>';
+  });
+  tbl += '</table>';
+
+  container.innerHTML = '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">' +
+    resilies.length + ' numéro(s) résilié(s)</div>' + tbl;
+}
+
+function exportHistorique() {
+  var resilies = STATE.records.filter(function(r){ return r.actif === false || r.statut === "Résilié"; });
+  if (!resilies.length) { showToast("Aucun résilié à exporter","warn"); return; }
+  var headers = ["MSISDN","NOM","SOCIETE","FONCTION","DOTATION","DATE_ENTREE","DATE_SORTIE","DERNIERE_FACTURE","DERNIER_MONTANT","STATUT"];
+  var rows = [headers];
+  resilies.forEach(function(r) {
+    rows.push([r.msisdn,r.nom,r.societe,r.fonction,r.dotation,
+               r.date_entree,r.date_sortie,r.derniere_facture,r.dernier_montant,r.statut||"Résilié"]);
+  });
+  if (typeof XLSX !== "undefined") {
+    var wb = XLSX.utils.book_new();
+    var ws = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(wb, ws, "Historique");
+    XLSX.writeFile(wb, "FlotteMTN_Historique_" + new Date().toISOString().slice(0,10) + ".xlsx");
+    showToast("✅ Historique exporté — " + resilies.length + " lignes");
+  }
+}
 
 // FIN DES SCRIPTS
 try { loadAll(); } catch(e) { 
